@@ -6,6 +6,9 @@ const ZONE_SIZE := 128  # metres per side; 1 m grid so HeightMapShape3D needs no
 const WATER_LEVEL := 0.0
 const VIEW_DIST := 200.0  # zones closer than this get generated; fog is fully opaque here
 const TREE_ATTEMPTS := 400  # random spots tried per zone; most are rejected (water, slope, clearing)
+const TREE_VARIANTS := 3  # models per species (tools/make_trees.py)
+const ROCK_ATTEMPTS := 40  # ~6 rocks per zone on plains, ~30 in hills
+const ROCK_KINDS := 5  # tools/make_rocks.py; rock_3 is a pebble (no collision)
 const MAX_JOBS := 4  # zones built in parallel on worker threads
 const MAP_PX := 32  # map pixels per zone side (4 m per pixel)
 enum TreeKind { CONIFER, OAK, BIRCH }
@@ -17,8 +20,10 @@ var threaded := OS.has_feature("threads")  # false in the web export (no-threads
 var noise := FastNoiseLite.new()
 var terrain_mat := StandardMaterial3D.new()
 var water_mat := StandardMaterial3D.new()
-var species: Array[Mesh] = []  # indexed by TreeKind
+var species: Array[Mesh] = []  # indexed by kind * TREE_VARIANTS + variant
 var trunk_shape := CylinderShape3D.new()
+var rock_meshes: Array[Mesh] = []
+var rock_shapes: Array[Shape3D] = []  # convex hull per rock kind, null for the pebble
 var player: CharacterBody3D
 var hud := Label.new()
 
@@ -32,13 +37,23 @@ func _init() -> void:
 	water_mat.albedo_color = Color(0.15, 0.4, 0.6, 0.75)
 	water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	water_mat.roughness = 0.05
-	# Models from tools/make_trees.py (Blender): one mesh each, bark + leaves surfaces, base at origin.
+	# Models from tools/make_trees.py and tools/make_rocks.py (Blender), base at origin.
 	for file in ["conifer", "oak", "birch"]:  # TreeKind order
-		var scene: Node = load("res://assets/trees/%s.glb" % file).instantiate()
-		species.append((scene.find_children("", "MeshInstance3D")[0] as MeshInstance3D).mesh)
-		scene.free()
+		for v in TREE_VARIANTS:
+			species.append(_tintable_leaves(_load_mesh("res://assets/trees/%s_%d.glb" % [file, v])))
+	for r in ROCK_KINDS:
+		var m := _load_mesh("res://assets/rocks/rock_%d.glb" % r)
+		rock_meshes.append(m)
+		rock_shapes.append(null if r == 3 else m.create_convex_shape())
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
+
+
+func _load_mesh(path: String) -> ArrayMesh:
+	var scene: Node = load(path).instantiate()
+	var mesh := (scene.find_children("", "MeshInstance3D")[0] as MeshInstance3D).mesh as ArrayMesh
+	scene.free()
+	return mesh
 
 
 func _ready() -> void:
@@ -81,7 +96,7 @@ func tree_transforms(cell: Vector2i) -> Array:
 	rng.seed = hash(Vector3i(noise.seed, cell.x, cell.y))
 	var half := ZONE_SIZE / 2.0
 	var out := []
-	for k in TreeKind.size():
+	for k in TreeKind.size() * TREE_VARIANTS:
 		out.append([] as Array[Transform3D])
 	for i in TREE_ATTEMPTS:
 		# Draw every value up front so the sequence never depends on which spots get rejected.
@@ -99,7 +114,35 @@ func tree_transforms(cell: Vector2i) -> Array:
 		# Species in groves: conifers up high, oak/birch patches below.
 		var v := noise.get_noise_2d(wx * 2.0 - 7000.0, wz * 2.0)
 		var kind := TreeKind.CONIFER if h > 14.0 or v < -0.1 else (TreeKind.OAK if v < 0.1 else TreeKind.BIRCH)
-		out[kind].append(Transform3D(Basis(Vector3.UP, rot).scaled(Vector3.ONE * s), Vector3(lx, h, lz)))
+		# Variant from position, not the RNG, so adding variants never moved existing trees.
+		var variant := hash(Vector3i(roundi(wx * 10.0), roundi(wz * 10.0), 7)) % TREE_VARIANTS
+		out[kind * TREE_VARIANTS + variant].append(Transform3D(Basis(Vector3.UP, rot).scaled(Vector3.ONE * s), Vector3(lx, h, lz)))
+	return out
+
+
+## Rock placements per rock kind (zone-local, origin on the ground, tilted to the slope).
+## Deterministic per seed + cell; denser in hills than on plains.
+func rock_transforms(cell: Vector2i) -> Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3i(noise.seed + 1, cell.x, cell.y))
+	var half := ZONE_SIZE / 2.0
+	var out := []
+	for k in ROCK_KINDS:
+		out.append([] as Array[Transform3D])
+	for i in ROCK_ATTEMPTS:
+		var lx := rng.randf_range(-half, half)
+		var lz := rng.randf_range(-half, half)
+		var keep := rng.randf()
+		var kind := rng.randi() % ROCK_KINDS
+		var s := rng.randf_range(0.6, 1.3)
+		var rot := rng.randf() * TAU
+		var wx := cell.x * ZONE_SIZE + lx
+		var wz := cell.y * ZONE_SIZE + lz
+		var h := height(wx, wz)
+		if h < WATER_LEVEL + 0.3 or keep > 0.15 + 0.6 * hilliness(wx, wz):
+			continue
+		var tilt := Basis(Quaternion(Vector3.UP, _normal(wx, wz)))
+		out[kind].append(Transform3D((tilt * Basis(Vector3.UP, rot)).scaled(Vector3.ONE * s), Vector3(lx, h, lz)))
 	return out
 
 
@@ -202,12 +245,13 @@ func _build_zone(cell: Vector2i) -> Dictionary:
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_INDEX] = idx
 	var trees := tree_transforms(cell)
+	var rocks := rock_transforms(cell)
 	return {"cell": cell, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
-		"map": _map_tile(heights, colors, normals, trees)}
+		"rocks": rocks, "map": _map_tile(heights, colors, normals, trees, rocks)}
 
 
-## Top-down MAP_PX² image of a zone (1 px = 4 m): ground colours, hill shading, water, trees.
-func _map_tile(heights: PackedFloat32Array, colors: PackedColorArray, normals: PackedVector3Array, trees: Array) -> Image:
+## Top-down MAP_PX² image of a zone (1 px = 4 m): ground colours, hill shading, water, trees, rocks.
+func _map_tile(heights: PackedFloat32Array, colors: PackedColorArray, normals: PackedVector3Array, trees: Array, rocks: Array) -> Image:
 	var n := ZONE_SIZE + 1
 	var step := ZONE_SIZE / MAP_PX
 	var light := Vector3(-1, 1.5, -1).normalized()  # from the north-west, like paper maps
@@ -217,10 +261,11 @@ func _map_tile(heights: PackedFloat32Array, colors: PackedColorArray, normals: P
 			var j := py * step * n + px * step
 			var c := Color(0.2, 0.45, 0.7) if heights[j] < WATER_LEVEL else colors[j]
 			tile.set_pixel(px, py, c * clampf(0.55 + 0.6 * normals[j].dot(light), 0.4, 1.2))
-	for list in trees:
-		for t: Transform3D in list:
-			var p := Vector2i((Vector2(t.origin.x, t.origin.z) + Vector2.ONE * (ZONE_SIZE / 2.0)) / step)
-			tile.set_pixelv(p.clampi(0, MAP_PX - 1), Color(0.08, 0.25, 0.1))
+	for group in [[trees, Color(0.08, 0.25, 0.1)], [rocks, Color(0.6, 0.6, 0.6)]]:
+		for list in group[0]:
+			for t: Transform3D in list:
+				var p := Vector2i((Vector2(t.origin.x, t.origin.z) + Vector2.ONE * (ZONE_SIZE / 2.0)) / step)
+				tile.set_pixelv(p.clampi(0, MAP_PX - 1), group[1])
 	return tile
 
 
@@ -250,24 +295,32 @@ func _attach_zone(d: Dictionary) -> void:
 	zone.add_child(body)
 
 	var all_trees: Array = d.trees
-	for kind in all_trees.size():
-		var trees: Array[Transform3D] = all_trees[kind]
+	for model in all_trees.size():
+		var trees: Array[Transform3D] = all_trees[model]
 		if trees.is_empty():
 			continue
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = species[kind]
-		mm.instance_count = trees.size()
-		for i in trees.size():
-			mm.set_instance_transform(i, trees[i])
-		var mmi := MultiMeshInstance3D.new()
-		mmi.multimesh = mm
-		zone.add_child(mmi)
+		var tints := PackedColorArray()
+		for t in trees:
+			tints.append(leaf_tint(zone.position + t.origin))
+		zone.add_child(_multimesh(species[model], trees, tints))
 		for t in trees:  # trunk collision only; crowns are above head height
 			var tcs := CollisionShape3D.new()
 			tcs.shape = trunk_shape
 			tcs.position = t.origin + Vector3.UP
 			body.add_child(tcs)
+
+	var all_rocks: Array = d.rocks
+	for kind in all_rocks.size():
+		var rocks: Array[Transform3D] = all_rocks[kind]
+		if rocks.is_empty():
+			continue
+		zone.add_child(_multimesh(rock_meshes[kind], rocks))
+		if rock_shapes[kind]:
+			for t in rocks:
+				var rcs := CollisionShape3D.new()
+				rcs.shape = rock_shapes[kind]
+				rcs.transform = t  # uniform scale only, which Godot supports on shapes
+				body.add_child(rcs)
 
 	if d.min_h < WATER_LEVEL:
 		var plane := PlaneMesh.new()
@@ -280,6 +333,38 @@ func _attach_zone(d: Dictionary) -> void:
 
 	zones[cell] = zone
 	add_child(zone)
+
+
+## One draw call for every instance of `mesh` in a zone; `colors` (optional) tints each instance.
+func _multimesh(mesh: Mesh, transforms: Array[Transform3D], colors := PackedColorArray()) -> MultiMeshInstance3D:
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = not colors.is_empty()
+	mm.mesh = mesh
+	mm.instance_count = transforms.size()
+	for i in transforms.size():
+		mm.set_instance_transform(i, transforms[i])
+		if mm.use_colors:
+			mm.set_instance_color(i, colors[i])
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	return mmi
+
+
+## Leaves (surface 1) multiply their colour by the MultiMesh instance colour; bark stays as is.
+func _tintable_leaves(mesh: ArrayMesh) -> ArrayMesh:
+	var mat := mesh.surface_get_material(1).duplicate() as StandardMaterial3D
+	mat.vertex_color_use_as_albedo = true  # mesh has no vertex colours, so COLOR = instance colour
+	mesh.surface_set_material(1, mat)
+	return mesh
+
+
+## Slight per-tree leaf colour shift: brightness ±15 %, yellower or bluer. Deterministic from position.
+func leaf_tint(p: Vector3) -> Color:
+	var h := hash(Vector2i(roundi(p.x * 10.0), roundi(p.z * 10.0)))
+	var b := 0.85 + 0.3 * float(h & 0xFF) / 255.0
+	var w := -0.08 + 0.18 * float((h >> 8) & 0xFF) / 255.0
+	return Color(b * (1.0 + w), b, b * (1.0 - w))
 
 
 func _ground_color(h: float, up: float) -> Color:

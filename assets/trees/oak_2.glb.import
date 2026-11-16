@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://dk1vocm1r6ek5"
-path="res://.godot/imported/birch.glb-9374f57bac965eee7263147ffdff0377.scn"
+uid="uid://6lsdrd5f3gq7"
+path="res://.godot/imported/oak_2.glb-29553db4aaca7f78b663c5fc4d6b3214.scn"
 
 [deps]
 
-source_file="res://assets/trees/birch.glb"
-dest_files=["res://.godot/imported/birch.glb-9374f57bac965eee7263147ffdff0377.scn"]
+source_file="res://assets/trees/oak_2.glb"
+dest_files=["res://.godot/imported/oak_2.glb-29553db4aaca7f78b663c5fc4d6b3214.scn"]
 
 [params]
 

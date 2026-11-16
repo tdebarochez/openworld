@@ -35,13 +35,30 @@ func _init() -> void:
 		for t in list:
 			assert(t.origin.y >= w.WATER_LEVEL + 2.0)
 	var counts := [0, 0, 0]
+	var per_model := []
+	per_model.resize(3 * w.TREE_VARIANTS)
+	per_model.fill(0)
+	var rocks_plain := 0
+	var rocks_hill := 0
 	for cx in range(-2, 3):
 		for cz in range(-2, 3):
-			var per_kind: Array = w.tree_transforms(Vector2i(cx, cz))
-			for k in 3:
-				counts[k] += per_kind[k].size()
-	print("trees conifer/oak/birch over 25 zones: ", counts)
+			var cell := Vector2i(cx, cz)
+			var models: Array = w.tree_transforms(cell)
+			for m in models.size():
+				counts[m / w.TREE_VARIANTS] += models[m].size()
+				per_model[m] += models[m].size()
+			var hilly: bool = w.hilliness(cx * w.ZONE_SIZE, cz * w.ZONE_SIZE) > 0.5
+			for list in w.rock_transforms(cell):
+				for t in list:
+					assert(t.origin.y >= w.WATER_LEVEL + 0.3)
+					if hilly: rocks_hill += 1
+					else: rocks_plain += 1
+	print("trees conifer/oak/birch over 25 zones: ", counts, "  per variant: ", per_model)
 	assert(counts.min() > 0)
+	assert(per_model.min() > 0)  # every variant of every species is used
+	assert(w.rock_transforms(Vector2i(2, -1)) == w.rock_transforms(Vector2i(2, -1)))
+	print("rocks over 25 zones: plains-centred ", rocks_plain, ", hill-centred ", rocks_hill)
+	assert(rocks_plain + rocks_hill > 0)
 
 	print("ALL OK")
 	w.free()

@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://7pvy6boqb0tk"
-path="res://.godot/imported/conifer.glb-ba713ed0e9b9b7f505874a5a214897d5.scn"
+uid="uid://buw5y5jjtd80m"
+path="res://.godot/imported/conifer_2.glb-d933f6ffbe6480dda588e24ac86397fd.scn"
 
 [deps]
 
-source_file="res://assets/trees/conifer.glb"
-dest_files=["res://.godot/imported/conifer.glb-ba713ed0e9b9b7f505874a5a214897d5.scn"]
+source_file="res://assets/trees/conifer_2.glb"
+dest_files=["res://.godot/imported/conifer_2.glb-d933f6ffbe6480dda588e24ac86397fd.scn"]
 
 [params]
 
