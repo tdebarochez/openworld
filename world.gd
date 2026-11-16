@@ -1,15 +1,17 @@
 extends Node3D
-## Bounded open world made of square terrain zones.
+## Open world made of square terrain zones, streamed in around the player (built on worker threads).
 ## Heights come from one global noise field, so adjacent zones always join seamlessly.
-## Press N to add a zone next to the one you stand in, in the direction you look.
 
 const ZONE_SIZE := 128  # metres per side; 1 m grid so HeightMapShape3D needs no scaling
 const WATER_LEVEL := 0.0
-const AUTO_GEN_DIST := 50.0  # generate the neighbour zone when closer than this to an edge
+const VIEW_DIST := 200.0  # zones closer than this get generated; fog is fully opaque here
 const TREE_ATTEMPTS := 400  # random spots tried per zone; most are rejected (water, slope, clearing)
+const MAX_JOBS := 4  # zones built in parallel on worker threads
 enum TreeKind { CONIFER, OAK, BIRCH }
 
 var zones := {}  # Vector2i -> Node3D
+var jobs := {}  # Vector2i -> {task: int, data: Dictionary} for zones being built on a worker thread
+var threaded := OS.has_feature("threads")  # false in the web export (no-threads build)
 var noise := FastNoiseLite.new()
 var terrain_mat := StandardMaterial3D.new()
 var water_mat := StandardMaterial3D.new()
@@ -60,7 +62,8 @@ func _tree_parts(top_r: float, bottom_r: float, trunk_h: float, bark: Color, cro
 
 func _ready() -> void:
 	_setup_environment()
-	add_zone(Vector2i.ZERO)
+	for c in missing_cells_near(Vector3.ZERO):  # whole view up front (~40 ms per zone)
+		add_zone(c)
 	player = preload("res://player.gd").new()
 	player.world = self
 	add_child(player)
@@ -114,45 +117,62 @@ func cell_of(p: Vector3) -> Vector2i:
 	return Vector2i(floori((p.x + ZONE_SIZE / 2.0) / ZONE_SIZE), floori((p.z + ZONE_SIZE / 2.0) / ZONE_SIZE))
 
 
-## First free cell walking from `from` along `dir` — always touches an existing zone.
-func next_free_cell(from: Vector2i, dir: Vector2i) -> Vector2i:
-	var c := from + dir
-	while zones.has(c):
-		c += dir
-	return c
+## Horizontal distance from `p` to the nearest point of a cell's square (0 when inside).
+func dist_to_cell(p: Vector3, cell: Vector2i) -> float:
+	var d := (Vector2(p.x, p.z) - Vector2(cell) * ZONE_SIZE).abs() - Vector2.ONE * (ZONE_SIZE / 2.0)
+	return d.max(Vector2.ZERO).length()
 
 
-## Neighbour cells to create for a player at `p`: one per near edge, plus the diagonal at a corner.
-func cells_near_edges(p: Vector3) -> Array[Vector2i]:
-	var cell := cell_of(p)
-	var local := Vector2(p.x, p.z) - Vector2(cell) * ZONE_SIZE
-	var limit := ZONE_SIZE / 2.0 - AUTO_GEN_DIST
-	var dx := int(signf(local.x)) if absf(local.x) > limit else 0
-	var dz := int(signf(local.y)) if absf(local.y) > limit else 0
+## Not-yet-generated cells within VIEW_DIST of `p`, nearest first.
+func missing_cells_near(p: Vector3) -> Array[Vector2i]:
+	var c := cell_of(p)
+	var r := ceili(VIEW_DIST / ZONE_SIZE) + 1
 	var out: Array[Vector2i] = []
-	if dx:
-		out.append(cell + Vector2i(dx, 0))
-	if dz:
-		out.append(cell + Vector2i(0, dz))
-	if dx and dz:
-		out.append(cell + Vector2i(dx, dz))
+	for dx in range(-r, r + 1):
+		for dz in range(-r, r + 1):
+			var cell := c + Vector2i(dx, dz)
+			if not zones.has(cell) and not jobs.has(cell) and dist_to_cell(p, cell) <= VIEW_DIST:
+				out.append(cell)
+	out.sort_custom(func(a, b): return dist_to_cell(p, a) < dist_to_cell(p, b))
 	return out
 
 
 func _physics_process(_delta: float) -> void:
-	var before := zones.size()
-	for c in cells_near_edges(player.global_position):
-		add_zone(c)
-	if zones.size() != before:
-		_update_hud()
+	# Attach zones whose worker finished (node creation must happen on the main thread).
+	for cell in jobs.keys():
+		var job: Dictionary = jobs[cell]
+		if WorkerThreadPool.is_task_completed(job.task):
+			WorkerThreadPool.wait_for_task_completion(job.task)
+			jobs.erase(cell)
+			_attach_zone(job.data)
+			_update_hud()
+	# Start building the nearest missing zones.
+	for cell in missing_cells_near(player.global_position):
+		if not threaded:  # no threads (web): one synchronous zone per frame
+			add_zone(cell)
+			_update_hud()
+			break
+		if jobs.size() >= MAX_JOBS:
+			break
+		var job := {"task": -1, "data": {}}
+		job.task = WorkerThreadPool.add_task(func(): job.data = _build_zone(cell))
+		jobs[cell] = job
 
 
+func _exit_tree() -> void:
+	for job in jobs.values():
+		WorkerThreadPool.wait_for_task_completion(job.task)
+
+
+## Synchronous build + attach (startup and tests).
 func add_zone(cell: Vector2i) -> void:
-	if zones.has(cell):
-		return
-	var zone := Node3D.new()
-	zone.name = "Zone_%d_%d" % [cell.x, cell.y]
-	zone.position = Vector3(cell.x, 0, cell.y) * ZONE_SIZE
+	if not zones.has(cell):
+		_attach_zone(_build_zone(cell))
+
+
+## Heavy part, thread-safe: only reads the noise and returns plain data.
+func _build_zone(cell: Vector2i) -> Dictionary:
+	var origin := Vector2(cell) * ZONE_SIZE
 	var n := ZONE_SIZE + 1
 	var half := ZONE_SIZE / 2
 	var verts := PackedVector3Array()
@@ -162,8 +182,8 @@ func add_zone(cell: Vector2i) -> void:
 	var min_h := INF
 	for z in n:
 		for x in n:
-			var wx := zone.position.x + x - half
-			var wz := zone.position.z + z - half
+			var wx := origin.x + x - half
+			var wz := origin.y + z - half
 			var h := height(wx, wz)
 			var nrm := _normal(wx, wz)
 			verts.append(Vector3(x - half, h, z - half))
@@ -184,8 +204,18 @@ func add_zone(cell: Vector2i) -> void:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_INDEX] = idx
+	return {"cell": cell, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": tree_transforms(cell)}
+
+
+## Light part, main thread: turn built data into nodes.
+func _attach_zone(d: Dictionary) -> void:
+	var cell: Vector2i = d.cell
+	var n := ZONE_SIZE + 1
+	var zone := Node3D.new()
+	zone.name = "Zone_%d_%d" % [cell.x, cell.y]
+	zone.position = Vector3(cell.x, 0, cell.y) * ZONE_SIZE
 	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, d.arrays)
 	mesh.surface_set_material(0, terrain_mat)
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
@@ -194,14 +224,14 @@ func add_zone(cell: Vector2i) -> void:
 	var shape := HeightMapShape3D.new()
 	shape.map_width = n
 	shape.map_depth = n
-	shape.map_data = heights
+	shape.map_data = d.heights
 	var cs := CollisionShape3D.new()
 	cs.shape = shape
 	var body := StaticBody3D.new()
 	body.add_child(cs)
 	zone.add_child(body)
 
-	var all_trees := tree_transforms(cell)
+	var all_trees: Array = d.trees
 	for kind in all_trees.size():
 		var trees: Array[Transform3D] = all_trees[kind]
 		if trees.is_empty():
@@ -222,7 +252,7 @@ func add_zone(cell: Vector2i) -> void:
 			tcs.position = t.origin + Vector3.UP
 			body.add_child(tcs)
 
-	if min_h < WATER_LEVEL:
+	if d.min_h < WATER_LEVEL:
 		var plane := PlaneMesh.new()
 		plane.size = Vector2(ZONE_SIZE, ZONE_SIZE)
 		plane.material = water_mat
@@ -245,23 +275,27 @@ func _ground_color(h: float, up: float) -> Color:
 	return Color(0.3, 0.55, 0.2)  # grass
 
 
-func _unhandled_input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and not e.echo and e.keycode == KEY_N:
-		var f: Vector3 = -player.camera.global_basis.z
-		var dir := Vector2i(int(signf(f.x)), 0) if absf(f.x) > absf(f.z) else Vector2i(0, int(signf(f.z)))
-		add_zone(next_free_cell(cell_of(player.global_position), dir))
-		_update_hud()
-
-
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · N nouvelle zone · Échap souris\nZones : %d" % zones.size()
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · Échap souris\nZones : %d" % zones.size()
 
 
 func _setup_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = Sky.new()
-	env.sky.sky_material = ProceduralSkyMaterial.new()
+	var sky_mat := ProceduralSkyMaterial.new()
+	# Haze = sky horizon colour; the ground half of the sky matches it so nothing shows past the fog.
+	var haze := sky_mat.sky_horizon_color
+	sky_mat.ground_horizon_color = haze
+	sky_mat.ground_bottom_color = haze
+	env.sky.sky_material = sky_mat
+	env.fog_enabled = true
+	env.fog_mode = Environment.FOG_MODE_DEPTH
+	env.fog_density = 1.0  # depth mode: opacity reached at fog_depth_end
+	env.fog_light_color = haze
+	env.fog_depth_begin = VIEW_DIST * 0.4
+	env.fog_depth_end = VIEW_DIST
+	env.fog_sky_affect = 0.0
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
 		# Web/WebGL2 renderer over-brightens ambient and sky reflections; use a dim flat ambient.

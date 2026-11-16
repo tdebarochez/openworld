@@ -9,8 +9,6 @@ func _init() -> void:
 
 	w.add_zone(Vector2i.ZERO)
 	w.add_zone(Vector2i(1, 0))
-	assert(w.next_free_cell(Vector2i.ZERO, Vector2i(1, 0)) == Vector2i(2, 0))
-	assert(w.next_free_cell(Vector2i.ZERO, Vector2i(0, -1)) == Vector2i(0, -1))
 
 	# Seam: zone 0's east edge must equal zone 1's west edge.
 	var n: int = w.ZONE_SIZE + 1
@@ -19,12 +17,16 @@ func _init() -> void:
 	for z in n:
 		assert(is_equal_approx(a[z * n + n - 1].y, b[z * n].y))
 
-	# Auto-generation: 50 m from an edge (edge at ±64 → trigger beyond ±14).
-	assert(w.cells_near_edges(Vector3(0, 0, 0)).is_empty())
-	assert(w.cells_near_edges(Vector3(13, 0, 0)).is_empty())
-	assert(w.cells_near_edges(Vector3(20, 0, 0)) == [Vector2i(1, 0)])
-	assert(w.cells_near_edges(Vector3(20, 0, -20)) == [Vector2i(1, 0), Vector2i(0, -1), Vector2i(1, -1)])
-	assert(w.cells_near_edges(Vector3(128 - 20, 0, 0)) == [Vector2i(0, 0)])
+	# Auto-generation within 200 m (zones (0,0) and (1,0) exist).
+	assert(w.dist_to_cell(Vector3(10, 0, 10), Vector2i.ZERO) == 0.0)
+	assert(is_equal_approx(w.dist_to_cell(Vector3.ZERO, Vector2i(2, 0)), 192.0))
+	var todo: Array[Vector2i] = w.missing_cells_near(Vector3.ZERO)
+	assert(not todo.has(Vector2i(0, 0)) and not todo.has(Vector2i(1, 0)))
+	assert(todo.has(Vector2i(2, 0)))       # edge at 192 m
+	assert(not todo.has(Vector2i(2, 1)))   # corner at ~202 m
+	assert(not todo.has(Vector2i(3, 0)))   # edge at 320 m
+	assert(is_equal_approx(w.dist_to_cell(Vector3.ZERO, todo[0]), 64.0))  # nearest first
+	print("zones to generate around origin: ", todo.size() + 2)
 
 	# Trees: same cell → same trees; none in water; each species appears somewhere nearby.
 	var t1: Array = w.tree_transforms(Vector2i(2, -1))

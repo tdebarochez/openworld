@@ -18,6 +18,7 @@ func _ready() -> void:
 	cs.shape = CapsuleShape3D.new()
 	add_child(cs)
 	camera.position.y = 0.7
+	camera.far = world.VIEW_DIST + 50.0  # nothing visible past the fog anyway
 	add_child(camera)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
