@@ -18,7 +18,8 @@ var map_tiles := {}  # Vector2i -> Image, top-down view of each generated zone
 var jobs := {}  # Vector2i -> {task: int, data: Dictionary} for zones being built on a worker thread
 var threaded := OS.has_feature("threads")  # false in the web export (no-threads build)
 var noise := FastNoiseLite.new()
-var terrain_mat := StandardMaterial3D.new()
+var seasons := preload("res://seasons.gd").new()
+var terrain_mat: ShaderMaterial = seasons.terrain_mat  # recolours the vertex colours per season
 var water_mat := StandardMaterial3D.new()
 var species: Array[Mesh] = []  # indexed by kind * TREE_VARIANTS + variant
 var trunk_shape := CylinderShape3D.new()
@@ -32,8 +33,8 @@ func _init() -> void:
 	noise.seed = 1337
 	noise.frequency = 0.004
 	noise.fractal_octaves = 5
-	terrain_mat.vertex_color_use_as_albedo = true
-	terrain_mat.vertex_color_is_srgb = true  # colors below are picked in sRGB
+	seasons.world = self
+	add_child(seasons)
 	water_mat.albedo_color = Color(0.15, 0.4, 0.6, 0.75)
 	water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	water_mat.roughness = 0.05
@@ -64,6 +65,7 @@ func _ready() -> void:
 	player.world = self
 	add_child(player)
 	player.position = Vector3(0, maxf(height(0, 0), WATER_LEVEL) + 2.0, 0)
+	seasons.setup()
 	var layer := CanvasLayer.new()
 	var map := preload("res://map.gd").new()
 	map.world = self
@@ -301,8 +303,10 @@ func _attach_zone(d: Dictionary) -> void:
 			continue
 		var tints := PackedColorArray()
 		for t in trees:
-			tints.append(leaf_tint(zone.position + t.origin))
-		zone.add_child(_multimesh(species[model], trees, tints))
+			tints.append(seasons.leaf_color(model / TREE_VARIANTS, zone.position + t.origin))
+		var mmi := _multimesh(species[model], trees, tints)
+		mmi.set_meta("trees", trees)  # seasons.gd rebuilds the leaf colours from these
+		zone.add_child(mmi)
 		for t in trees:  # trunk collision only; crowns are above head height
 			var tcs := CollisionShape3D.new()
 			tcs.shape = trunk_shape
@@ -378,7 +382,7 @@ func _ground_color(h: float, up: float) -> Color:
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · M carte · Échap souris\nZones : %d" % zones.size()
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · M carte · 1-4 saison · Échap souris\nZones : %d · Saison : %s" % [zones.size(), seasons.NAMES[seasons.season]]
 
 
 func _setup_environment() -> void:
