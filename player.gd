@@ -11,6 +11,7 @@ const MOUSE_SENS := 0.003
 
 var world: Node3D  # world.gd — used to keep the player inside existing zones
 var camera := Camera3D.new()
+var sfx := preload("res://audio.gd").new()  # music + footsteps/jump/land
 
 
 func _ready() -> void:
@@ -20,6 +21,7 @@ func _ready() -> void:
 	camera.position.y = 0.7
 	camera.far = world.VIEW_DIST + 50.0  # nothing visible past the fog anyway
 	add_child(camera)
+	add_child(sfx)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
@@ -45,6 +47,7 @@ func _physics_process(delta: float) -> void:
 		velocity += get_gravity() * delta
 	elif Input.is_physical_key_pressed(KEY_SPACE):
 		velocity.y = JUMP
+		sfx.jump()
 	var input := Vector2(
 		float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
 		float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
@@ -54,6 +57,7 @@ func _physics_process(delta: float) -> void:
 	velocity.z = dir.z
 	var prev := global_position
 	move_and_slide()
+	sfx.update(delta, is_on_floor(), swimming, Vector2(velocity.x, velocity.z).length())
 	# World bound: stepping into a cell with no zone is undone.
 	if not world.zones.has(world.cell_of(global_position)):
 		global_position.x = prev.x
