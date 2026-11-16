@@ -12,13 +12,15 @@ func _initialize() -> void:
 
 
 func _drop_in_lake() -> void:  # after world _ready, which creates the player
-	for x in range(-60, 60, 2):
-		for z in range(-60, 60, 2):
+	for x in range(-1000, 1000, 8):
+		for z in range(-1000, 1000, 8):
 			if w.height(x, z) < -5.0:
-				w.player.position = Vector3(x, 3, z)
+				var spot := Vector3(x, 3, z)
+				w.add_zone(w.cell_of(spot))  # ground under the player before it falls
+				w.player.position = spot
 				print("lake spot ", x, ",", z)
 				return
-	push_error("no deep lake in zone 0")
+	push_error("no deep lake within 1 km")
 	quit(1)
 
 

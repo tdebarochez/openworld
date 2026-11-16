@@ -76,7 +76,13 @@ func _ready() -> void:
 
 
 func height(x: float, z: float) -> float:
-	return noise.get_noise_2d(x, z) * 35.0 + 5.0
+	var n := noise.get_noise_2d(x, z)
+	return lerpf(n * 6.0 + 4.0, n * 35.0 + 5.0, hilliness(x, z))  # plains (1..7 m) → hills (±20 m)
+
+
+## 0 = plain, 1 = hills. Very low frequency (regions of ~1 km), sampled far from the height noise.
+func hilliness(x: float, z: float) -> float:
+	return smoothstep(-0.15, 0.15, noise.get_noise_2d(x * 0.3 + 20000.0, z * 0.3))
 
 
 ## Normal from the global field (not the mesh) so lighting matches across zone edges.
@@ -180,12 +186,19 @@ func _build_zone(cell: Vector2i) -> Dictionary:
 	var colors := PackedColorArray()
 	var heights := PackedFloat32Array()
 	var min_h := INF
+	# Heights with a 1-vertex border, so normals reuse them instead of re-sampling the noise
+	# (same formula as _normal, ~5x fewer noise calls).
+	var g := n + 2
+	var grid := PackedFloat32Array()
+	grid.resize(g * g)
+	for z in g:
+		for x in g:
+			grid[z * g + x] = height(origin.x + x - 1 - half, origin.y + z - 1 - half)
 	for z in n:
 		for x in n:
-			var wx := origin.x + x - half
-			var wz := origin.y + z - half
-			var h := height(wx, wz)
-			var nrm := _normal(wx, wz)
+			var i := (z + 1) * g + x + 1
+			var h := grid[i]
+			var nrm := Vector3(grid[i - 1] - grid[i + 1], 2.0, grid[i - g] - grid[i + g]).normalized()
 			verts.append(Vector3(x - half, h, z - half))
 			normals.append(nrm)
 			colors.append(_ground_color(h, nrm.y))
