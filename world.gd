@@ -17,7 +17,7 @@ var threaded := OS.has_feature("threads")  # false in the web export (no-threads
 var noise := FastNoiseLite.new()
 var terrain_mat := StandardMaterial3D.new()
 var water_mat := StandardMaterial3D.new()
-var species := []  # indexed by TreeKind: list of [mesh, lift] parts, meshes are centred so lift = centre height
+var species: Array[Mesh] = []  # indexed by TreeKind
 var trunk_shape := CylinderShape3D.new()
 var player: CharacterBody3D
 var hud := Label.new()
@@ -32,34 +32,13 @@ func _init() -> void:
 	water_mat.albedo_color = Color(0.15, 0.4, 0.6, 0.75)
 	water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	water_mat.roughness = 0.05
-	var cone := CylinderMesh.new()
-	cone.top_radius = 0.0
-	cone.bottom_radius = 1.6
-	cone.height = 4.0
-	var oak_crown := SphereMesh.new()  # wide, flattened
-	oak_crown.radius = 2.6
-	oak_crown.height = 4.0
-	var birch_crown := SphereMesh.new()  # narrow, elongated
-	birch_crown.radius = 1.2
-	birch_crown.height = 3.6
-	species.resize(TreeKind.size())
-	species[TreeKind.CONIFER] = _tree_parts(0.15, 0.25, 2.0, Color(0.4, 0.27, 0.15), cone, 4.0, Color(0.13, 0.36, 0.15))
-	species[TreeKind.OAK] = _tree_parts(0.3, 0.45, 3.0, Color(0.33, 0.24, 0.15), oak_crown, 4.6, Color(0.24, 0.42, 0.12))
-	species[TreeKind.BIRCH] = _tree_parts(0.09, 0.13, 5.0, Color(0.88, 0.87, 0.82), birch_crown, 5.6, Color(0.5, 0.68, 0.22))
+	# Models from tools/make_trees.py (Blender): one mesh each, bark + leaves surfaces, base at origin.
+	for file in ["conifer", "oak", "birch"]:  # TreeKind order
+		var scene: Node = load("res://assets/trees/%s.glb" % file).instantiate()
+		species.append((scene.find_children("", "MeshInstance3D")[0] as MeshInstance3D).mesh)
+		scene.free()
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
-
-
-func _tree_parts(top_r: float, bottom_r: float, trunk_h: float, bark: Color, crown: PrimitiveMesh, crown_y: float, leaves: Color) -> Array:
-	var trunk := CylinderMesh.new()
-	trunk.top_radius = top_r
-	trunk.bottom_radius = bottom_r
-	trunk.height = trunk_h
-	trunk.material = StandardMaterial3D.new()
-	trunk.material.albedo_color = bark
-	crown.material = StandardMaterial3D.new()
-	crown.material.albedo_color = leaves
-	return [[trunk, trunk_h / 2.0], [crown, crown_y]]
 
 
 func _ready() -> void:
@@ -275,16 +254,15 @@ func _attach_zone(d: Dictionary) -> void:
 		var trees: Array[Transform3D] = all_trees[kind]
 		if trees.is_empty():
 			continue
-		for part in species[kind]:
-			var mm := MultiMesh.new()
-			mm.transform_format = MultiMesh.TRANSFORM_3D
-			mm.mesh = part[0]
-			mm.instance_count = trees.size()
-			for i in trees.size():
-				mm.set_instance_transform(i, trees[i].translated_local(Vector3(0, part[1], 0)))
-			var mmi := MultiMeshInstance3D.new()
-			mmi.multimesh = mm
-			zone.add_child(mmi)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = species[kind]
+		mm.instance_count = trees.size()
+		for i in trees.size():
+			mm.set_instance_transform(i, trees[i])
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		zone.add_child(mmi)
 		for t in trees:  # trunk collision only; crowns are above head height
 			var tcs := CollisionShape3D.new()
 			tcs.shape = trunk_shape
