@@ -6,11 +6,15 @@ extends Node3D
 const ZONE_SIZE := 128  # metres per side; 1 m grid so HeightMapShape3D needs no scaling
 const WATER_LEVEL := 0.0
 const AUTO_GEN_DIST := 50.0  # generate the neighbour zone when closer than this to an edge
+const TREE_ATTEMPTS := 400  # random spots tried per zone; most are rejected (water, slope, clearing)
+enum TreeKind { CONIFER, OAK, BIRCH }
 
 var zones := {}  # Vector2i -> Node3D
 var noise := FastNoiseLite.new()
 var terrain_mat := StandardMaterial3D.new()
 var water_mat := StandardMaterial3D.new()
+var species := []  # indexed by TreeKind: list of [mesh, lift] parts, meshes are centred so lift = centre height
+var trunk_shape := CylinderShape3D.new()
 var player: CharacterBody3D
 var hud := Label.new()
 
@@ -24,6 +28,34 @@ func _init() -> void:
 	water_mat.albedo_color = Color(0.15, 0.4, 0.6, 0.75)
 	water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	water_mat.roughness = 0.05
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = 1.6
+	cone.height = 4.0
+	var oak_crown := SphereMesh.new()  # wide, flattened
+	oak_crown.radius = 2.6
+	oak_crown.height = 4.0
+	var birch_crown := SphereMesh.new()  # narrow, elongated
+	birch_crown.radius = 1.2
+	birch_crown.height = 3.6
+	species.resize(TreeKind.size())
+	species[TreeKind.CONIFER] = _tree_parts(0.15, 0.25, 2.0, Color(0.4, 0.27, 0.15), cone, 4.0, Color(0.13, 0.36, 0.15))
+	species[TreeKind.OAK] = _tree_parts(0.3, 0.45, 3.0, Color(0.33, 0.24, 0.15), oak_crown, 4.6, Color(0.24, 0.42, 0.12))
+	species[TreeKind.BIRCH] = _tree_parts(0.09, 0.13, 5.0, Color(0.88, 0.87, 0.82), birch_crown, 5.6, Color(0.5, 0.68, 0.22))
+	trunk_shape.radius = 0.3
+	trunk_shape.height = 2.0
+
+
+func _tree_parts(top_r: float, bottom_r: float, trunk_h: float, bark: Color, crown: PrimitiveMesh, crown_y: float, leaves: Color) -> Array:
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = top_r
+	trunk.bottom_radius = bottom_r
+	trunk.height = trunk_h
+	trunk.material = StandardMaterial3D.new()
+	trunk.material.albedo_color = bark
+	crown.material = StandardMaterial3D.new()
+	crown.material.albedo_color = leaves
+	return [[trunk, trunk_h / 2.0], [crown, crown_y]]
 
 
 func _ready() -> void:
@@ -42,6 +74,40 @@ func _ready() -> void:
 
 func height(x: float, z: float) -> float:
 	return noise.get_noise_2d(x, z) * 35.0 + 5.0
+
+
+## Normal from the global field (not the mesh) so lighting matches across zone edges.
+func _normal(x: float, z: float) -> Vector3:
+	return Vector3(height(x - 1, z) - height(x + 1, z), 2.0, height(x, z - 1) - height(x, z + 1)).normalized()
+
+
+## Tree placements in zone-local coords (origin on the ground), deterministic per seed + cell.
+## Returns one Array[Transform3D] per TreeKind.
+func tree_transforms(cell: Vector2i) -> Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3i(noise.seed, cell.x, cell.y))
+	var half := ZONE_SIZE / 2.0
+	var out := []
+	for k in TreeKind.size():
+		out.append([] as Array[Transform3D])
+	for i in TREE_ATTEMPTS:
+		# Draw every value up front so the sequence never depends on which spots get rejected.
+		var lx := rng.randf_range(-half, half)
+		var lz := rng.randf_range(-half, half)
+		var s := rng.randf_range(0.7, 1.4)
+		var rot := rng.randf() * TAU
+		var wx := cell.x * ZONE_SIZE + lx
+		var wz := cell.y * ZONE_SIZE + lz
+		var h := height(wx, wz)
+		if h < WATER_LEVEL + 2.0 or h > 20.0 or _normal(wx, wz).y < 0.85:
+			continue
+		if noise.get_noise_2d(wx * 4.0 + 5000.0, wz * 4.0) < 0.0:  # forests vs clearings
+			continue
+		# Species in groves: conifers up high, oak/birch patches below.
+		var v := noise.get_noise_2d(wx * 2.0 - 7000.0, wz * 2.0)
+		var kind := TreeKind.CONIFER if h > 14.0 or v < -0.1 else (TreeKind.OAK if v < 0.1 else TreeKind.BIRCH)
+		out[kind].append(Transform3D(Basis(Vector3.UP, rot).scaled(Vector3.ONE * s), Vector3(lx, h, lz)))
+	return out
 
 
 func cell_of(p: Vector3) -> Vector2i:
@@ -99,8 +165,7 @@ func add_zone(cell: Vector2i) -> void:
 			var wx := zone.position.x + x - half
 			var wz := zone.position.z + z - half
 			var h := height(wx, wz)
-			# Normal from the global field (not the mesh) so lighting matches across zone edges.
-			var nrm := Vector3(height(wx - 1, wz) - height(wx + 1, wz), 2.0, height(wx, wz - 1) - height(wx, wz + 1)).normalized()
+			var nrm := _normal(wx, wz)
 			verts.append(Vector3(x - half, h, z - half))
 			normals.append(nrm)
 			colors.append(_ground_color(h, nrm.y))
@@ -136,6 +201,27 @@ func add_zone(cell: Vector2i) -> void:
 	body.add_child(cs)
 	zone.add_child(body)
 
+	var all_trees := tree_transforms(cell)
+	for kind in all_trees.size():
+		var trees: Array[Transform3D] = all_trees[kind]
+		if trees.is_empty():
+			continue
+		for part in species[kind]:
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.mesh = part[0]
+			mm.instance_count = trees.size()
+			for i in trees.size():
+				mm.set_instance_transform(i, trees[i].translated_local(Vector3(0, part[1], 0)))
+			var mmi := MultiMeshInstance3D.new()
+			mmi.multimesh = mm
+			zone.add_child(mmi)
+		for t in trees:  # trunk collision only; crowns are above head height
+			var tcs := CollisionShape3D.new()
+			tcs.shape = trunk_shape
+			tcs.position = t.origin + Vector3.UP
+			body.add_child(tcs)
+
 	if min_h < WATER_LEVEL:
 		var plane := PlaneMesh.new()
 		plane.size = Vector2(ZONE_SIZE, ZONE_SIZE)
@@ -168,7 +254,7 @@ func _unhandled_input(e: InputEvent) -> void:
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter · Souris regarder · N nouvelle zone · Échap souris\nZones : %d" % zones.size()
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · N nouvelle zone · Échap souris\nZones : %d" % zones.size()
 
 
 func _setup_environment() -> void:

@@ -26,6 +26,21 @@ func _init() -> void:
 	assert(w.cells_near_edges(Vector3(20, 0, -20)) == [Vector2i(1, 0), Vector2i(0, -1), Vector2i(1, -1)])
 	assert(w.cells_near_edges(Vector3(128 - 20, 0, 0)) == [Vector2i(0, 0)])
 
+	# Trees: same cell → same trees; none in water; each species appears somewhere nearby.
+	var t1: Array = w.tree_transforms(Vector2i(2, -1))
+	assert(t1 == w.tree_transforms(Vector2i(2, -1)))
+	for list in t1:
+		for t in list:
+			assert(t.origin.y >= w.WATER_LEVEL + 2.0)
+	var counts := [0, 0, 0]
+	for cx in range(-2, 3):
+		for cz in range(-2, 3):
+			var per_kind: Array = w.tree_transforms(Vector2i(cx, cz))
+			for k in 3:
+				counts[k] += per_kind[k].size()
+	print("trees conifer/oak/birch over 25 zones: ", counts)
+	assert(counts.min() > 0)
+
 	print("ALL OK")
 	w.free()
 	quit()
