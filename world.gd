@@ -7,9 +7,11 @@ const WATER_LEVEL := 0.0
 const VIEW_DIST := 200.0  # zones closer than this get generated; fog is fully opaque here
 const TREE_ATTEMPTS := 400  # random spots tried per zone; most are rejected (water, slope, clearing)
 const MAX_JOBS := 4  # zones built in parallel on worker threads
+const MAP_PX := 32  # map pixels per zone side (4 m per pixel)
 enum TreeKind { CONIFER, OAK, BIRCH }
 
 var zones := {}  # Vector2i -> Node3D
+var map_tiles := {}  # Vector2i -> Image, top-down view of each generated zone
 var jobs := {}  # Vector2i -> {task: int, data: Dictionary} for zones being built on a worker thread
 var threaded := OS.has_feature("threads")  # false in the web export (no-threads build)
 var noise := FastNoiseLite.new()
@@ -69,6 +71,9 @@ func _ready() -> void:
 	add_child(player)
 	player.position = Vector3(0, maxf(height(0, 0), WATER_LEVEL) + 2.0, 0)
 	var layer := CanvasLayer.new()
+	var map := preload("res://map.gd").new()
+	map.world = self
+	layer.add_child(map)
 	hud.position = Vector2(12, 12)
 	layer.add_child(hud)
 	add_child(layer)
@@ -217,7 +222,27 @@ func _build_zone(cell: Vector2i) -> Dictionary:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_INDEX] = idx
-	return {"cell": cell, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": tree_transforms(cell)}
+	var trees := tree_transforms(cell)
+	return {"cell": cell, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
+		"map": _map_tile(heights, colors, normals, trees)}
+
+
+## Top-down MAP_PX² image of a zone (1 px = 4 m): ground colours, hill shading, water, trees.
+func _map_tile(heights: PackedFloat32Array, colors: PackedColorArray, normals: PackedVector3Array, trees: Array) -> Image:
+	var n := ZONE_SIZE + 1
+	var step := ZONE_SIZE / MAP_PX
+	var light := Vector3(-1, 1.5, -1).normalized()  # from the north-west, like paper maps
+	var tile := Image.create(MAP_PX, MAP_PX, false, Image.FORMAT_RGB8)
+	for py in MAP_PX:
+		for px in MAP_PX:
+			var j := py * step * n + px * step
+			var c := Color(0.2, 0.45, 0.7) if heights[j] < WATER_LEVEL else colors[j]
+			tile.set_pixel(px, py, c * clampf(0.55 + 0.6 * normals[j].dot(light), 0.4, 1.2))
+	for list in trees:
+		for t: Transform3D in list:
+			var p := Vector2i((Vector2(t.origin.x, t.origin.z) + Vector2.ONE * (ZONE_SIZE / 2.0)) / step)
+			tile.set_pixelv(p.clampi(0, MAP_PX - 1), Color(0.08, 0.25, 0.1))
+	return tile
 
 
 ## Light part, main thread: turn built data into nodes.
@@ -227,6 +252,7 @@ func _attach_zone(d: Dictionary) -> void:
 	var zone := Node3D.new()
 	zone.name = "Zone_%d_%d" % [cell.x, cell.y]
 	zone.position = Vector3(cell.x, 0, cell.y) * ZONE_SIZE
+	map_tiles[cell] = d.map
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, d.arrays)
 	mesh.surface_set_material(0, terrain_mat)
@@ -289,7 +315,7 @@ func _ground_color(h: float, up: float) -> Color:
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · Échap souris\nZones : %d" % zones.size()
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · M carte · Échap souris\nZones : %d" % zones.size()
 
 
 func _setup_environment() -> void:
