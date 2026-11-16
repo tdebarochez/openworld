@@ -14,6 +14,7 @@ const MAP_PX := 32  # map pixels per zone side (4 m per pixel)
 enum TreeKind { CONIFER, OAK, BIRCH }
 
 var zones := {}  # Vector2i -> Node3D
+var zone_trees := {}  # Vector2i -> the zone's `trees` data (zone-local, per model); birds.gd perches on them
 var map_tiles := {}  # Vector2i -> Image, top-down view of each generated zone
 var jobs := {}  # Vector2i -> {task: int, data: Dictionary} for zones being built on a worker thread
 var threaded := OS.has_feature("threads")  # false in the web export (no-threads build)
@@ -66,6 +67,7 @@ func _ready() -> void:
 	add_child(player)
 	player.position = Vector3(0, maxf(height(0, 0), WATER_LEVEL) + 2.0, 0)
 	seasons.setup()
+	add_child(preload("res://birds.gd").new())  # finds the world as its parent
 	var layer := CanvasLayer.new()
 	var map := preload("res://map.gd").new()
 	map.world = self
@@ -335,6 +337,7 @@ func _attach_zone(d: Dictionary) -> void:
 		water.position.y = WATER_LEVEL
 		zone.add_child(water)
 
+	zone_trees[cell] = d.trees
 	zones[cell] = zone
 	add_child(zone)
 
