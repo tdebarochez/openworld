@@ -1,7 +1,7 @@
 extends SceneTree
 # Run: godot --headless --path . -s tests/test_daynight.gd
 # Time wraps and is moved by +/-, the sun sets at night, the sun path follows the season (46°N),
-# and a season's tint survives the hour.
+# a season's tint survives the hour, and the night sky has a Milky Way.
 
 var w
 var frames := 0
@@ -139,4 +139,34 @@ func _check():
 	assert(sun.light_color.is_equal_approx(w.seasons.light.sun * d.MOON))
 	w.seasons.set_season(S.SUMMER)
 	assert(sun.light_color.is_equal_approx(w.seasons.base.sun * d.MOON), "season switch at night stays night")
+
+	# Night sky cover: stars + Milky Way, shown at night only, brighter along the band's great circle
+	# (well above the horizon) than 50° off it, high in the sky, and the same on every build.
+	var sky: ProceduralSkyMaterial = w.seasons.sky
+	var img: Image = sky.sky_cover.get_image()
+	assert(img.get_size() == Vector2i(2048, 1024))
+	d.set_time(0.0)
+	assert(sky.sky_cover_modulate.a == 1.0)
+	d.set_time(d.NOON)
+	assert(sky.sky_cover_modulate.a == 0.0)
+	var e: Array = d._galaxy_axes()
+	var top := 0.0
+	var on := [0.0, 0]
+	var off := [0.0, 0]
+	for i in 720:
+		var l := i / 720.0 * TAU
+		var p: Vector3 = e[0] * cos(l) + e[1] * sin(l)
+		top = maxf(top, p.y)
+		for b in [-0.1, 0.0, 0.1, -0.87, 0.87]:  # sin of the galactic latitude
+			var v: Vector3 = p * sqrt(1.0 - b * b) + e[2] * b
+			if v.y < 0.35:  # 20° up, clear of the extinction near the horizon
+				continue
+			var acc: Array = on if absf(b) < 0.5 else off
+			acc[0] += img.get_pixel(int(fposmod(atan2(v.x, -v.z) / TAU, 1.0) * 2048.0) % 2048,
+				int(acos(v.y) / PI * 1024.0)).get_luminance()
+			acc[1] += 1
+	print("milky way: arch top %.0f°, mean on band %.3f, off %.3f" % [rad_to_deg(asin(top)), on[0] / on[1], off[0] / off[1]])
+	assert(top > sin(deg_to_rad(60.0)), "the band arches high")
+	assert(on[0] / on[1] > 4.0 * off[0] / off[1] and on[0] / on[1] > 0.05)
+	assert(d._stars().get_image().get_data() == img.get_data(), "deterministic")
 	return true
