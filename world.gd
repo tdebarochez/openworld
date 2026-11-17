@@ -38,6 +38,11 @@ const LAMP_LIGHT := Vector3(LAMP_ARM, LAMP_HEIGHT + 0.2, 0)  # lantern centre = 
 const LAMP_COLOR := Color(1.0, 0.75, 0.42)  # warm sodium-ish
 const LAMP_SHADOW_DIST := 35.0  # m from the camera within which a lamp casts shadows
 const LAMP_ON_SUN := 0.05  # lamps light up once the sun is lower than this (dir.y, ~3° above the horizon)
+enum Prop { BENCH, PLAIN_BENCH, PLANTER }  # village street furniture (_make_props); PLAIN = no backrest
+const BENCH_RADIUS := 8.0  # m from the village centre: the edge of the dirt square, between the lamps
+const PLANTER_TOP := 0.2  # m above the ground: the planter's soil, where its flowers stand
+# Village flowers: tulips (spring) in front of one of the summer bloomers, picked per planter or clump.
+const VILLAGE_FLOWERS := ["tulip", "poppy", "sunflower", "heather"]
 const ROAD_HALF := 2.0  # road half-width, metres
 const ROAD_LINKS := 2  # each village gets a road to its nearest villages…
 const ROAD_MAX := 900.0  # …within this distance
@@ -90,6 +95,9 @@ var lamp_glass := StandardMaterial3D.new()
 var lamp_shape := CylinderShape3D.new()
 var lamps_on := false
 var lamp_fade := true  # off in the iso view, whose camera is 100 m away (every lamp would fade out)
+var prop_meshes: Array[ArrayMesh] = []  # per Prop
+var prop_shapes: Array[BoxShape3D] = []  # per Prop, the mesh's box
+var prop_centres: Array[Vector3] = []
 # Memoised village sites / villages / roads (pure functions of the seed), shared by worker threads.
 var _sites := {}
 var _villages := {}
@@ -145,6 +153,7 @@ func _init() -> void:
 		var full := m.get_aabb()
 		house_radius.append(Vector2(maxf(-full.position.x, full.end.x), maxf(-full.position.z, full.end.z)).length())
 	_make_lamp()
+	_make_props()
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
 
@@ -372,7 +381,52 @@ func _village(g: Vector2i) -> Dictionary:
 		if not _near_line(p, roads, ROAD_HALF + 1.0) and height(p.x, p.y) > WATER_LEVEL + 0.5 and not in_house(p, houses):
 			var to_square := c - p
 			lamps.append([Vector3(p.x, height(p.x, p.y), p.y), atan2(-to_square.y, to_square.x)])
-	return {"centre": c, "houses": houses, "lamps": lamps}
+	# Benches between the square's lamps, facing its centre, each with a flower clump behind; a planter
+	# against each house's front wall at both corners (doors sit nearer the middle). Nothing on a road,
+	# in a house or against a lamp. Every value is drawn even for rejected spots.
+	var props := []  # [world position on the ground, yaw, Prop]: benches face +Z, planters run along X
+	var plants := []  # [world position, yaw, flower kind, scale]
+	var fk: Array = VILLAGE_FLOWERS.map(func(n): return flowers.find_custom(func(f): return f.name == n))
+	for i in 5:
+		var a := TAU * (i + 0.5) / 5.0 + 0.3
+		var kind := rng.randi() % 2  # BENCH or PLAIN_BENCH
+		var p := c + Vector2.from_angle(a) * BENCH_RADIUS
+		if not _near_line(p, roads, ROAD_HALF + 1.0) and not in_house(p, houses, 1.0) and _far_from(p, lamps + props, 1.5):
+			props.append([Vector3(p.x, height(p.x, p.y), p.y), atan2(c.x - p.x, c.y - p.y), kind])
+		var pair := [fk[0], fk[rng.randi_range(1, fk.size() - 1)]]
+		for j in 7:  # a ring of six round a seventh
+			var q := c + Vector2.from_angle(a) * (BENCH_RADIUS + 1.8)
+			q += Vector2.ZERO if j == 6 else Vector2.from_angle(TAU * j / 6.0) * rng.randf_range(0.35, 0.45)
+			var yaw := rng.randf() * TAU
+			var s := rng.randf_range(0.8, 1.15)
+			if not _near_line(q, roads, ROAD_HALF + 0.5) and not in_house(q, houses, 0.2) and _far_from(q, lamps + props, 1.0):
+				plants.append([Vector3(q.x, height(q.x, q.y), q.y), yaw, pair[j % 2], s])
+	for hs in houses:
+		var pair := [fk[rng.randi_range(1, fk.size() - 1)], fk[0]]  # back row, front row (tulips)
+		var size: Vector3 = house_shapes[hs[2]].size
+		var hc: Vector3 = house_centres[hs[2]]
+		var rot := Basis(Vector3.UP, hs[1])
+		for side in [1, -1]:
+			# Planter centre at a front corner, just clear of the walls and of anything low out front
+			# (house_low: balcony posts, porch, gallery).
+			var lp := Vector3(hc.x + side * (size.x / 2.0 - 0.8), 0, house_low[hs[2]].end.y + 0.45)
+			var w: Vector3 = hs[0] + rot * lp
+			var p := Vector2(w.x, w.z)
+			var top := height(p.x, p.y) + PLANTER_TOP
+			var bed := []
+			for j in 8:  # two rows of four
+				var l: Vector3 = hs[0] + rot * (lp + Vector3((j % 4 - 1.5) * 0.3 + rng.randfn(0, 0.03), 0, (j / 4 - 0.5) * 0.28))
+				bed.append([Vector3(l.x, top, l.z), rng.randf() * TAU, pair[j / 4], rng.randf_range(0.8, 1.15)])
+			if not _near_line(p, roads, ROAD_HALF + 1.0) and _far_from(p, lamps + props, 1.0) \
+					and bed.all(func(b): return not in_house(Vector2(b[0].x, b[0].z), houses, 0.1)):
+				props.append([Vector3(p.x, top - PLANTER_TOP, p.y), hs[1], Prop.PLANTER])
+				plants.append_array(bed)
+	return {"centre": c, "houses": houses, "lamps": lamps, "props": props, "flowers": plants}
+
+
+## True if `p` (world x/z) is at least `r` from every [world position, …] of `things`.
+static func _far_from(p: Vector2, things: Array, r: float) -> bool:
+	return things.all(func(o): return Vector2(o[0].x, o[0].z).distance_to(p) >= r)
 
 
 ## table[key], computing it with `fn` on first use. Thread-safe; two threads may compute the same
@@ -462,6 +516,12 @@ func layout(cell: Vector2i) -> Dictionary:
 	for k in HOUSE_KINDS:
 		houses.append([] as Array[Transform3D])
 	var lamps: Array[Transform3D] = []
+	var props := []  # per Prop
+	for k in Prop.size():
+		props.append([] as Array[Transform3D])
+	var plants := []  # per flower kind
+	for k in flowers.size():
+		plants.append([] as Array[Transform3D])
 	var reach := half + ROAD_MAX + VILLAGE_GRID  # a road touching this zone starts within this range
 	var lo := Vector2i(((origin - Vector2.ONE * reach) / VILLAGE_GRID).floor())
 	var hi := Vector2i(((origin + Vector2.ONE * reach) / VILLAGE_GRID).floor())
@@ -500,7 +560,15 @@ func layout(cell: Vector2i) -> Dictionary:
 				var ll: Vector3 = lamp[0] - Vector3(origin.x, 0, origin.y)
 				if absf(ll.x) < half and absf(ll.z) < half:
 					lamps.append(Transform3D(Basis(Vector3.UP, lamp[1]), ll))
-	return {"mask": mask, "houses": houses, "lamps": lamps}
+			for pr in v.props:
+				var pl: Vector3 = pr[0] - Vector3(origin.x, 0, origin.y)
+				if absf(pl.x) < half and absf(pl.z) < half:
+					props[pr[2]].append(Transform3D(Basis(Vector3.UP, pr[1]), pl))
+			for f in v.flowers:  # own data, so the CLEAR mask doesn't drop them
+				var fl: Vector3 = f[0] - Vector3(origin.x, 0, origin.y)
+				if absf(fl.x) < half and absf(fl.z) < half:
+					plants[f[2]].append(Transform3D(Basis(Vector3.UP, f[1]).scaled(Vector3.ONE * f[3]), fl))
+	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -641,6 +709,42 @@ func _make_lamp() -> void:
 	lamp_shape.height = LAMP_HEIGHT + 0.6
 
 
+## Village props (per Prop), base on the ground: benches (seat facing +Z, wooden boards on stone legs),
+## with or without a two-board backrest, and a stone planter filled with soil up to PLANTER_TOP.
+## Stone parts are sunk 0.1-0.15 m for uneven ground.
+func _make_props() -> void:
+	var mats := []
+	for c in [Color(0.42, 0.28, 0.16), Color(0.56, 0.55, 0.51), Color(0.24, 0.16, 0.1)]:  # wood, stone, soil
+		var m := StandardMaterial3D.new()
+		m.albedo_color = c
+		m.roughness = 0.9
+		mats.append(m)
+	# [size, centre] of each box, metres
+	var seat := [[Vector3(1.6, 0.06, 0.42), Vector3(0, 0.45, 0)]]
+	var back := [[Vector3(1.6, 0.12, 0.03), Vector3(0, 0.66, -0.2)], [Vector3(1.6, 0.12, 0.03), Vector3(0, 0.84, -0.2)],
+		[Vector3(0.06, 0.48, 0.05), Vector3(-0.6, 0.66, -0.24)], [Vector3(0.06, 0.48, 0.05), Vector3(0.6, 0.66, -0.24)]]
+	var legs := [[Vector3(0.14, 0.57, 0.5), Vector3(-0.6, 0.135, -0.04)], [Vector3(0.14, 0.57, 0.5), Vector3(0.6, 0.135, -0.04)]]
+	var planter := [[Vector3(1.3, PLANTER_TOP + 0.1, 0.6), Vector3(0, (PLANTER_TOP - 0.1) / 2.0, 0)]]
+	var soil := [[Vector3(1.16, 0.02, 0.46), Vector3(0, PLANTER_TOP, 0)]]
+	for parts in [[[seat + back, mats[0]], [legs, mats[1]]], [[seat, mats[0]], [legs, mats[1]]],  # Prop order
+			[[planter, mats[1]], [soil, mats[2]]]]:
+		var mesh: ArrayMesh = null
+		for part in parts:
+			var st := SurfaceTool.new()
+			st.begin(Mesh.PRIMITIVE_TRIANGLES)
+			for b in part[0]:
+				var box := BoxMesh.new()
+				box.size = b[0]
+				st.append_from(box, 0, Transform3D(Basis(), b[1]))
+			st.set_material(part[1])
+			mesh = st.commit(mesh)
+		prop_meshes.append(mesh)
+		var shape := BoxShape3D.new()
+		shape.size = mesh.get_aabb().size
+		prop_shapes.append(shape)
+		prop_centres.append(mesh.get_aabb().get_center())
+
+
 ## Lanterns glow and their lights shine from dusk to dawn.
 func set_lamps(on: bool) -> void:
 	lamps_on = on
@@ -761,10 +865,13 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 	arrays[Mesh.ARRAY_INDEX] = idx
 	var trees := tree_transforms(cell, mask)
 	var rocks := rock_transforms(cell, mask) if full else []
+	var flw := flower_transforms(cell, mask) if full else []
+	for k in flw.size():
+		flw[k].append_array(lay.flowers[k])  # village beds share the wild flowers' MultiMesh
 	return {"cell": cell, "density": dens, "detail": detail, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
-		"rocks": rocks, "flowers": flower_transforms(cell, mask) if full else [], "houses": lay.houses,
+		"rocks": rocks, "flowers": flw, "houses": lay.houses,
 		"bushes": bush_transforms(cell, mask) if full else [],
-		"lamps": lay.lamps if full else ([] as Array[Transform3D]),
+		"lamps": lay.lamps if full else ([] as Array[Transform3D]), "props": lay.props if full else [],
 		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask, res)}
 
 
@@ -907,6 +1014,18 @@ func _attach_zone(d: Dictionary) -> void:
 			lcs.shape = lamp_shape
 			lcs.position = t.origin + Vector3.UP * ((LAMP_HEIGHT + 0.6) / 2.0)
 			body.add_child(lcs)  # lamps only exist in full zones, which have a body
+
+	var all_props: Array = d.props  # full zones only, like the lamps
+	for kind in all_props.size():
+		var list: Array[Transform3D] = all_props[kind]
+		if list.is_empty():
+			continue
+		zone.add_child(_multimesh(prop_meshes[kind], list))
+		for t in list:
+			var pcs := CollisionShape3D.new()
+			pcs.shape = prop_shapes[kind]
+			pcs.transform = t * Transform3D(Basis(), prop_centres[kind])
+			body.add_child(pcs)
 
 	var all_flowers: Array = d.flowers
 	for kind in all_flowers.size():
