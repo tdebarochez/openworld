@@ -21,6 +21,7 @@ var threaded := OS.has_feature("threads")  # false in the web export (no-threads
 var noise := FastNoiseLite.new()
 var seasons := preload("res://seasons.gd").new()
 var terrain_mat: ShaderMaterial = seasons.terrain_mat  # recolours the vertex colours per season
+var daynight  # daynight.gd, made in _ready
 var water_mat := StandardMaterial3D.new()
 var species: Array[Mesh] = []  # indexed by kind * TREE_VARIANTS + variant
 var trunk_shape := CylinderShape3D.new()
@@ -67,6 +68,9 @@ func _ready() -> void:
 	add_child(player)
 	player.position = Vector3(0, maxf(height(0, 0), WATER_LEVEL) + 2.0, 0)
 	seasons.setup()
+	daynight = preload("res://daynight.gd").new()
+	daynight.world = self
+	add_child(daynight)  # after seasons.setup(): applies its light for the hour
 	add_child(preload("res://birds.gd").new())  # finds the world as its parent
 	var layer := CanvasLayer.new()
 	var map := preload("res://map.gd").new()
@@ -385,7 +389,7 @@ func _ground_color(h: float, up: float) -> Color:
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · M carte · 1-4 saison · Échap souris\nZones : %d · Saison : %s" % [zones.size(), seasons.NAMES[seasons.season]]
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · M carte · 1-4 saison · +/- heure · Échap souris\nZones : %d · Saison : %s · Heure : %s" % [zones.size(), seasons.NAMES[seasons.season], daynight.clock()]
 
 
 func _setup_environment() -> void:

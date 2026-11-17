@@ -73,6 +73,7 @@ var env: Environment
 var sky: ProceduralSkyMaterial
 var sun: DirectionalLight3D
 var base := {}  # summer light values
+var light := {}  # this season's noon light (keys of base); daynight.gd applies it for the hour
 var snow: CPUParticles3D  # made in setup(), carried by the player
 # The Compatibility renderer (web) shades in sRGB, so instance colours must not be linearised there.
 var srgb_out := RenderingServer.get_current_rendering_method() == "gl_compatibility"
@@ -96,6 +97,7 @@ func setup() -> void:
 	base = {"sun": sun.light_color, "energy": sun.light_energy, "top": sky.sky_top_color,
 		"haze": sky.sky_horizon_color, "fog": env.fog_depth_begin, "ambient": env.ambient_light_color,
 		"water": world.water_mat.albedo_color, "water_rough": world.water_mat.roughness}
+	light = base
 	var shader := Shader.new()
 	shader.code = SNOWY_LEAVES_SHADER
 	for model in world.species.size():
@@ -133,16 +135,10 @@ func set_season(s: Season) -> void:
 			if mmi.has_meta("trees"):
 				_recolour(mmi.multimesh, mmi.get_meta("trees"), zone.position)
 	var l: Dictionary = LIGHT[s]
-	sun.light_color = base.sun * l.sun
-	sun.light_energy = base.energy * l.energy
-	var haze: Color = base.haze.lerp(l.haze, l.mix)
-	sky.sky_horizon_color = haze
-	sky.ground_horizon_color = haze
-	sky.ground_bottom_color = haze
-	sky.sky_top_color = base.top.lerp(l.haze, l.mix * 0.5)
-	env.fog_light_color = haze
-	env.fog_depth_begin = base.fog * l.fog
-	env.ambient_light_color = base.ambient * l.sun  # only used by the Compatibility renderer
+	light = {"sun": base.sun * l.sun, "energy": base.energy * l.energy, "haze": base.haze.lerp(l.haze, l.mix),
+		"top": base.top.lerp(l.haze, l.mix * 0.5), "fog": base.fog * l.fog,
+		"ambient": base.ambient * l.sun}  # ambient: only used by the Compatibility renderer
+	world.daynight.apply()  # final sun/sky/fog = this season's light × time of day
 	snow.emitting = winter
 	snow.visible = winter
 	world._update_hud()
