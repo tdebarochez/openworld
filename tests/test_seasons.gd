@@ -81,6 +81,7 @@ func _check():
 				assert(conifer_mat is ShaderMaterial)
 				assert(oak_mat.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR)
 				assert(w.water_mat.albedo_color == s.ICE)
+				assert(w.house_meshes.all(func(m): return m.surface_get_material(1) is ShaderMaterial), "snow on the roofs")
 				assert(s.snow.emitting)
 				assert(w.seasons.sun.light_energy < sun_energy)
 			S.SUMMER:
@@ -89,6 +90,8 @@ func _check():
 				assert(oak_mat.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED)
 				assert(oak_mat.albedo_color == s.leaf_albedo[w.TreeKind.OAK * w.TREE_VARIANTS])
 				assert(w.water_mat.albedo_color == water)
+				for k in w.house_meshes.size():
+					assert(w.house_meshes[k].surface_get_material(1) == s.roof_mats[k], "summer roofs")
 				assert(w.seasons.sun.light_energy == sun_energy)
 				assert(not s.snow.emitting)
 			_:

@@ -71,6 +71,8 @@ var terrain_mat := ShaderMaterial.new()
 var leaf_mats: Array[StandardMaterial3D] = []  # per tree model, the tintable leaves material
 var leaf_albedo: Array[Color] = []  # its summer colour
 var snowy_mats: Array[ShaderMaterial] = []  # per tree model, winter leaves (used for conifers)
+var roof_mats: Array[Material] = []  # per house kind, the roof (surface 1, tools/make_houses.py)
+var snowy_roofs: Array[ShaderMaterial] = []  # same snowy shader: white on the slopes, roof colour below
 var env: Environment
 var sky: ProceduralSkyMaterial
 var sun: DirectionalLight3D
@@ -116,6 +118,13 @@ func setup() -> void:
 		snowy.shader = shader
 		snowy.set_shader_parameter("leaf", mat.albedo_color)
 		snowy_mats.append(snowy)
+	for m: Mesh in world.house_meshes:
+		var roof := m.surface_get_material(1) as StandardMaterial3D
+		roof_mats.append(roof)
+		var snowy := ShaderMaterial.new()
+		snowy.shader = shader
+		snowy.set_shader_parameter("leaf", roof.albedo_color)
+		snowy_roofs.append(snowy)
 	hidden_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 	hidden_mat.albedo_color = Color(1, 1, 1, 0)
 	for f in world.flowers:
@@ -141,6 +150,8 @@ func set_season(s: Season) -> void:
 	var winter := s == Season.WINTER
 	world.water_mat.albedo_color = ICE if winter else base.water
 	world.water_mat.roughness = 0.4 if winter else base.water_rough
+	for k in world.house_meshes.size():  # snow on the roofs (shared meshes: every zone at once)
+		world.house_meshes[k].surface_set_material(1, snowy_roofs[k] if winter else roof_mats[k])
 	for model in world.species.size():
 		if model / world.TREE_VARIANTS == world.TreeKind.CONIFER:
 			world.species[model].surface_set_material(1, snowy_mats[model] if winter else leaf_mats[model])
