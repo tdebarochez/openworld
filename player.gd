@@ -143,8 +143,8 @@ func _physics_process(delta: float) -> void:
 	var prev := global_position
 	move_and_slide()
 	sfx.update(delta, is_on_floor(), swimming, Vector2(velocity.x, velocity.z).length())
-	# World bound: stepping into a cell with no zone is undone.
-	if not world.zones.has(world.cell_of(global_position)):
+	# World bound: stepping into a cell with no zone (or a light one, without collision yet) is undone.
+	if not world.is_solid(world.cell_of(global_position)):
 		global_position.x = prev.x
 		global_position.z = prev.z
 	if iso:

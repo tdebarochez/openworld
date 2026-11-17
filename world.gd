@@ -5,8 +5,22 @@ extends Node3D
 const ZONE_SIZE := 128  # metres per side; 1 m grid so HeightMapShape3D needs no scaling
 const WATER_LEVEL := 0.0
 const VIEW_DIST := 200.0  # default view distance: zones closer than this get generated; fog is fully opaque here
-const VIEW_DISTS := [200.0, 300.0, 400.0, 500.0]  # P cycles them
-const DENSITIES := [0.5, 1.0, 1.5, 2.0, 3.0]  # O cycles them: multiplier of tree/rock/flower attempts
+# P / O step the view distance and the density (multiplier of tree/rock/flower attempts) up,
+# Shift+P / Shift+O down, wrapping around at both ends.
+const VIEW_STEP := 100.0
+const VIEW_MAX := 2000.0  # ~840 zones
+const DENSITY_STEP := 0.5
+const DENSITY_MAX := 10.0
+# Detail by distance. FULL: everything. LIGHT (beyond NEAR_DIST): terrain, trees, houses and water only —
+# no rocks, flowers or collision (nothing out there can be touched). COARSE (beyond COARSE_DIST): LIGHT
+# with a COARSE_RES m terrain grid (16x fewer triangles) and skirts hiding the cracks against finer
+# neighbours. Zones are rebuilt as the player moves; a zone keeps its level half a zone past the
+# threshold, so walking along it doesn't thrash.
+enum Detail { FULL, LIGHT, COARSE }
+const NEAR_DIST := 250.0
+const COARSE_DIST := 1000.0
+const COARSE_RES := 4  # m between coarse terrain vertices (= map pixel size)
+const SKIRT := 4.0  # m the coarse zone's edges hang down
 const TREE_ATTEMPTS := 400  # random spots tried per zone; most are rejected (water, slope, clearing)
 const TREE_VARIANTS := 3  # models per species (tools/make_trees.py)
 const ROCK_ATTEMPTS := 40  # ~6 rocks per zone on plains, ~30 in hills
@@ -14,6 +28,9 @@ const ROCK_KINDS := 5  # tools/make_rocks.py; rock_3 is a pebble (no collision)
 const FLOWER_CLUSTERS := 40  # flower beds tried per zone; about half fit their species' habitat
 const VILLAGE_GRID := 400.0  # one candidate village per 400 m square, kept only on flat plains
 const HOUSE_KINDS := 3  # tools/make_houses.py
+const LAMP_HEIGHT := 3.4  # m, top of the pole = bottom of the lantern
+const LAMP_COLOR := Color(1.0, 0.75, 0.42)  # warm sodium-ish
+const LAMP_ON_SUN := 0.05  # lamps light up once the sun is lower than this (dir.y, ~3° above the horizon)
 const ROAD_HALF := 2.0  # road half-width, metres
 const ROAD_LINKS := 2  # each village gets a road to its nearest villages…
 const ROAD_MAX := 900.0  # …within this distance
@@ -32,7 +49,7 @@ enum TreeKind { CONIFER, OAK, BIRCH }
 var view_dist := VIEW_DIST
 # Placement attempts are drawn in a fixed order, so a higher density keeps every existing object and adds more.
 var density := 1.0
-var stale := {}  # cells whose loaded zone was built at another density; rebuilt nearest first
+var built := {}  # Vector2i -> [density, Detail] the loaded zone was built with; outdated ones are rebuilt nearest first
 var zones := {}  # Vector2i -> Node3D
 var zone_trees := {}  # Vector2i -> the zone's `trees` data (zone-local, per model); birds.gd perches on them
 var map_tiles := {}  # Vector2i -> Image, top-down view of each generated zone
@@ -53,6 +70,11 @@ var flowers: Array = []
 var house_meshes: Array[Mesh] = []
 var house_shapes: Array[BoxShape3D] = []  # per kind, the walls' box (plinth excluded)
 var house_centres: Array[Vector3] = []  # per kind, centre of that box in the house's frame
+# Village street lamps: dark pole + lantern (surface 1, lit at night), an OmniLight each in full zones.
+var lamp_mesh := ArrayMesh.new()
+var lamp_glass := StandardMaterial3D.new()
+var lamp_shape := CylinderShape3D.new()
+var lamps_on := false
 # Memoised village sites / villages / roads (pure functions of the seed), shared by worker threads.
 var _sites := {}
 var _villages := {}
@@ -60,6 +82,7 @@ var _roads := {}
 var _memo_lock := Mutex.new()
 var player: CharacterBody3D
 var hud := Label.new()
+var fps := Label.new()  # bottom right: frames per second (engine's 1 s average) and visible polygons
 
 
 func _init() -> void:
@@ -91,6 +114,7 @@ func _init() -> void:
 		shape.size = box.size
 		house_shapes.append(shape)
 		house_centres.append(box.get_center())
+	_make_lamp()
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
 
@@ -122,6 +146,11 @@ func _ready() -> void:
 	layer.add_child(map)
 	hud.position = Vector2(12, 12)
 	layer.add_child(hud)
+	fps.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 12)
+	fps.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	fps.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	layer.add_child(fps)
 	add_child(layer)
 	_update_hud()
 
@@ -259,7 +288,19 @@ func _village(g: Vector2i) -> Dictionary:
 			continue
 		var to_square := c - p
 		houses.append([Vector3(p.x, ph - 0.1, p.y), atan2(to_square.x, to_square.y), kind])
-	return {"centre": c, "houses": houses}
+	# Street lamps: five round the square (inside its clearing) and one beside each front door,
+	# none on a road.
+	var spots: Array[Vector2] = []
+	for i in 5:
+		spots.append(c + Vector2.from_angle(TAU * i / 5.0 + 0.3) * 8.3)
+	for hs in houses:
+		var front: Vector3 = Basis(Vector3.UP, hs[1]) * Vector3(2.4, 0, 4.6)  # doors face +Z
+		spots.append(Vector2(hs[0].x + front.x, hs[0].z + front.z))
+	var lamps := []
+	for p in spots:
+		if not _near_line(p, roads, ROAD_HALF + 1.0) and height(p.x, p.y) > WATER_LEVEL + 0.5:
+			lamps.append(Vector3(p.x, height(p.x, p.y), p.y))
+	return {"centre": c, "houses": houses, "lamps": lamps}
 
 
 ## table[key], computing it with `fn` on first use. Thread-safe; two threads may compute the same
@@ -338,6 +379,7 @@ func layout(cell: Vector2i) -> Dictionary:
 	var houses := []
 	for k in HOUSE_KINDS:
 		houses.append([] as Array[Transform3D])
+	var lamps: Array[Transform3D] = []
 	var reach := half + ROAD_MAX + VILLAGE_GRID  # a road touching this zone starts within this range
 	var lo := Vector2i(((origin - Vector2.ONE * reach) / VILLAGE_GRID).floor())
 	var hi := Vector2i(((origin + Vector2.ONE * reach) / VILLAGE_GRID).floor())
@@ -372,7 +414,11 @@ func layout(cell: Vector2i) -> Dictionary:
 				_mark_segment(mask, lp, lp, 0.0, 7.5)
 				if absf(lp.x) < half and absf(lp.y) < half:
 					houses[hs[2]].append(Transform3D(Basis(Vector3.UP, hs[1]), Vector3(lp.x, hs[0].y, lp.y)))
-	return {"mask": mask, "houses": houses}
+			for lamp: Vector3 in v.lamps:
+				var ll := lamp - Vector3(origin.x, 0, origin.y)
+				if absf(ll.x) < half and absf(ll.z) < half:
+					lamps.append(Transform3D(Basis(), ll))
+	return {"mask": mask, "houses": houses, "lamps": lamps}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -436,7 +482,28 @@ func dist_to_cell(p: Vector3, cell: Vector2i) -> float:
 	return d.max(Vector2.ZERO).length()
 
 
-## Not-yet-generated (or stale) cells within view_dist of `p`, nearest first.
+## The Detail the zone at `cell` should have, seen from `p` (with half a zone of hysteresis).
+func wants_detail(p: Vector3, cell: Vector2i) -> Detail:
+	var d := dist_to_cell(p, cell)
+	var was: int = built[cell][1] if built.has(cell) else -1
+	var pad := ZONE_SIZE * 0.5
+	if d <= NEAR_DIST + (pad if was == Detail.FULL else 0.0):
+		return Detail.FULL
+	if d > COARSE_DIST - (pad if was == Detail.COARSE else 0.0):
+		return Detail.COARSE
+	return Detail.LIGHT
+
+
+## The player can only walk on fully built zones (the others have no collision).
+func is_solid(cell: Vector2i) -> bool:
+	return built.has(cell) and built[cell][1] == Detail.FULL
+
+
+func _outdated(p: Vector3, cell: Vector2i) -> bool:
+	return not built.has(cell) or built[cell] != [density, wants_detail(p, cell)]
+
+
+## Cells within view_dist of `p` that are not generated yet or need a rebuild (density or detail), nearest first.
 func missing_cells_near(p: Vector3) -> Array[Vector2i]:
 	var c := cell_of(p)
 	var r := ceili(view_dist / ZONE_SIZE) + 1
@@ -444,10 +511,63 @@ func missing_cells_near(p: Vector3) -> Array[Vector2i]:
 	for dx in range(-r, r + 1):
 		for dz in range(-r, r + 1):
 			var cell := c + Vector2i(dx, dz)
-			if (not zones.has(cell) or stale.has(cell)) and not jobs.has(cell) and dist_to_cell(p, cell) <= view_dist:
+			if not jobs.has(cell) and dist_to_cell(p, cell) <= view_dist and _outdated(p, cell):
 				out.append(cell)
 	out.sort_custom(func(a, b): return dist_to_cell(p, a) < dist_to_cell(p, b))
 	return out
+
+
+## Street lamp model: pole and cap (surface 0, dark metal), lantern (surface 1, `lamp_glass`).
+func _make_lamp() -> void:
+	var metal := StandardMaterial3D.new()
+	metal.albedo_color = Color(0.15, 0.15, 0.16)
+	metal.roughness = 0.6
+	lamp_glass.albedo_color = Color(0.85, 0.8, 0.65)
+	lamp_glass.emission_enabled = true
+	lamp_glass.emission = LAMP_COLOR
+	lamp_glass.emission_energy_multiplier = 0.0  # set_lamps() turns it up at night
+	var pole := CylinderMesh.new()
+	pole.top_radius = 0.05
+	pole.bottom_radius = 0.08
+	pole.height = LAMP_HEIGHT
+	pole.radial_segments = 6
+	pole.rings = 1
+	var cap := CylinderMesh.new()
+	cap.top_radius = 0.03
+	cap.bottom_radius = 0.28
+	cap.height = 0.2
+	cap.radial_segments = 6
+	cap.rings = 1
+	var glass := BoxMesh.new()
+	glass.size = Vector3(0.3, 0.4, 0.3)
+	for part in [[[pole, LAMP_HEIGHT / 2.0], [cap, LAMP_HEIGHT + 0.5]], [[glass, LAMP_HEIGHT + 0.2]]]:
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for piece in part:
+			st.append_from(piece[0], 0, Transform3D(Basis(), Vector3.UP * piece[1]))
+		st.commit(lamp_mesh)
+	lamp_mesh.surface_set_material(0, metal)
+	lamp_mesh.surface_set_material(1, lamp_glass)
+	lamp_shape.radius = 0.1
+	lamp_shape.height = LAMP_HEIGHT
+
+
+## Lanterns glow and their lights shine from dusk to dawn.
+func set_lamps(on: bool) -> void:
+	lamps_on = on
+	lamp_glass.emission_energy_multiplier = 3.0 if on else 0.0
+	for light in get_tree().get_nodes_in_group("lamp_light"):
+		light.visible = on
+
+
+func _process(_delta: float) -> void:
+	var night: bool = daynight.sun_dir(daynight.time, daynight.DECLINATION[seasons.season]).y < LAMP_ON_SUN
+	if night != lamps_on:
+		set_lamps(night)
+	var f := Engine.get_frames_per_second()
+	# Triangles drawn by the camera pass (shadow passes excluded).
+	var tris := get_viewport().get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE, Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)
+	fps.text = "%d FPS · %.1f ms · %.2f M polygones" % [f, 1000.0 / maxf(f, 1.0), tris / 1e6]
 
 
 func _physics_process(_delta: float) -> void:
@@ -460,15 +580,17 @@ func _physics_process(_delta: float) -> void:
 			_attach_zone(job.data)
 			_update_hud()
 	# Start building the nearest missing zones.
-	for cell in missing_cells_near(player.global_position):
+	var p := player.global_position
+	for cell in missing_cells_near(p):
+		var detail := wants_detail(p, cell)
 		if not threaded:  # no threads (web): one synchronous zone per frame
-			add_zone(cell)
+			add_zone(cell, detail)
 			_update_hud()
 			break
 		if jobs.size() >= MAX_JOBS:
 			break
 		var job := {"task": -1, "data": {}}
-		job.task = WorkerThreadPool.add_task(func(): job.data = _build_zone(cell))
+		job.task = WorkerThreadPool.add_task(func(): job.data = _build_zone(cell, detail))
 		jobs[cell] = job
 
 
@@ -477,17 +599,20 @@ func _exit_tree() -> void:
 		WorkerThreadPool.wait_for_task_completion(job.task)
 
 
-## Synchronous build + attach (startup and tests).
-func add_zone(cell: Vector2i) -> void:
-	if not zones.has(cell) or stale.has(cell):
-		_attach_zone(_build_zone(cell))
+## Synchronous build + attach (startup, web and tests); skipped if already built that way.
+func add_zone(cell: Vector2i, detail := Detail.FULL) -> void:
+	if built.get(cell) != [density, detail]:
+		_attach_zone(_build_zone(cell, detail))
 
 
-## Heavy part, thread-safe: only reads the noise and returns plain data.
-func _build_zone(cell: Vector2i) -> Dictionary:
+## Heavy part, thread-safe: only reads the noise and returns plain data. See Detail for the levels.
+func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 	var dens := density  # read first: if it changes mid-build, the zone is tagged old and rebuilt
+	var full := detail == Detail.FULL
+	var res := COARSE_RES if detail == Detail.COARSE else 1  # metres between terrain vertices
 	var origin := Vector2(cell) * ZONE_SIZE
-	var n := ZONE_SIZE + 1
+	var cells := ZONE_SIZE / res
+	var n := cells + 1
 	var half := ZONE_SIZE / 2
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
@@ -503,23 +628,35 @@ func _build_zone(cell: Vector2i) -> Dictionary:
 	grid.resize(g * g)
 	for z in g:
 		for x in g:
-			grid[z * g + x] = height(origin.x + x - 1 - half, origin.y + z - 1 - half)
+			grid[z * g + x] = height(origin.x + (x - 1) * res - half, origin.y + (z - 1) * res - half)
+	var mn := ZONE_SIZE + 1  # the layout mask is always 1 m
 	for z in n:
 		for x in n:
 			var i := (z + 1) * g + x + 1
 			var h := grid[i]
-			var nrm := Vector3(grid[i - 1] - grid[i + 1], 2.0, grid[i - g] - grid[i + g]).normalized()
-			verts.append(Vector3(x - half, h, z - half))
+			var nrm := Vector3(grid[i - 1] - grid[i + 1], 2.0 * res, grid[i - g] - grid[i + g]).normalized()
+			verts.append(Vector3(x * res - half, h, z * res - half))
 			normals.append(nrm)
-			colors.append(ROAD_COLOR if mask[z * n + x] == ROAD else _ground_color(h, nrm.y))
+			colors.append(ROAD_COLOR if mask[z * res * mn + x * res] == ROAD else _ground_color(h, nrm.y))
 			heights.append(h)
 			min_h = minf(min_h, h)
 
 	var idx := PackedInt32Array()
-	for z in ZONE_SIZE:
-		for x in ZONE_SIZE:
+	for z in cells:
+		for x in cells:
 			var i := z * n + x
 			idx.append_array([i, i + 1, i + n, i + 1, i + n + 1, i + n])
+	if detail == Detail.COARSE:
+		# Skirts: each edge repeated SKIRT m lower and joined to it, so the 4 m edge never shows a gap
+		# against a finer neighbour's 1 m edge (the terrain material is double-sided).
+		for edge in [range(0, n), range(n * (n - 1), n * n), range(0, n * n, n), range(n - 1, n * n, n)]:
+			var base := verts.size()
+			for i: int in edge:
+				verts.append(verts[i] - Vector3(0, SKIRT, 0))
+				normals.append(normals[i])
+				colors.append(colors[i])
+			for k in n - 1:
+				idx.append_array([edge[k], edge[k + 1], base + k, edge[k + 1], base + k + 1, base + k])
 
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -528,21 +665,23 @@ func _build_zone(cell: Vector2i) -> Dictionary:
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_INDEX] = idx
 	var trees := tree_transforms(cell, mask)
-	var rocks := rock_transforms(cell, mask)
-	return {"cell": cell, "density": dens, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
-		"rocks": rocks, "flowers": flower_transforms(cell, mask), "houses": lay.houses,
-		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask)}
+	var rocks := rock_transforms(cell, mask) if full else []
+	return {"cell": cell, "density": dens, "detail": detail, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
+		"rocks": rocks, "flowers": flower_transforms(cell, mask) if full else [], "houses": lay.houses,
+		"lamps": lay.lamps if full else ([] as Array[Transform3D]),
+		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask, res)}
 
 
 ## Top-down MAP_PX² image of a zone (1 px = 4 m): ground colours, hill shading, water, trees, rocks.
-func _map_tile(heights: PackedFloat32Array, colors: PackedColorArray, normals: PackedVector3Array, trees: Array, rocks: Array, houses := [], mask := PackedByteArray()) -> Image:
-	var n := ZONE_SIZE + 1
+## `res`: metres between the given terrain samples (1, or COARSE_RES); `mask` is always 1 m.
+func _map_tile(heights: PackedFloat32Array, colors: PackedColorArray, normals: PackedVector3Array, trees: Array, rocks: Array, houses := [], mask := PackedByteArray(), res := 1) -> Image:
+	var n := ZONE_SIZE / res + 1
 	var step := ZONE_SIZE / MAP_PX
 	var light := Vector3(-1, 1.5, -1).normalized()  # from the north-west, like paper maps
 	var tile := Image.create(MAP_PX, MAP_PX, false, Image.FORMAT_RGB8)
 	for py in MAP_PX:
 		for px in MAP_PX:
-			var j := py * step * n + px * step
+			var j := (py * n + px) * step / res
 			var c := Color(0.2, 0.45, 0.7) if heights[j] < WATER_LEVEL else colors[j]
 			tile.set_pixel(px, py, c * clampf(0.55 + 0.6 * normals[j].dot(light), 0.4, 1.2))
 			if not mask.is_empty() and _block_has_road(mask, px * step, py * step, step):
@@ -579,15 +718,17 @@ func _attach_zone(d: Dictionary) -> void:
 	mi.mesh = mesh
 	zone.add_child(mi)
 
-	var shape := HeightMapShape3D.new()
-	shape.map_width = n
-	shape.map_depth = n
-	shape.map_data = d.heights
-	var cs := CollisionShape3D.new()
-	cs.shape = shape
-	var body := StaticBody3D.new()
-	body.add_child(cs)
-	zone.add_child(body)
+	var body: StaticBody3D = null  # light and coarse (far) zones have no collision at all
+	if d.detail == Detail.FULL:
+		var shape := HeightMapShape3D.new()
+		shape.map_width = n
+		shape.map_depth = n
+		shape.map_data = d.heights
+		var cs := CollisionShape3D.new()
+		cs.shape = shape
+		body = StaticBody3D.new()
+		body.add_child(cs)
+		zone.add_child(body)
 
 	var all_trees: Array = d.trees
 	for model in all_trees.size():
@@ -600,7 +741,7 @@ func _attach_zone(d: Dictionary) -> void:
 		var mmi := _multimesh(species[model], trees, tints)
 		mmi.set_meta("trees", trees)  # seasons.gd rebuilds the leaf colours from these
 		zone.add_child(mmi)
-		for t in trees:  # trunk collision only; crowns are above head height
+		for t in trees if body else []:  # trunk collision only; crowns are above head height
 			var tcs := CollisionShape3D.new()
 			tcs.shape = trunk_shape
 			tcs.position = t.origin + Vector3.UP
@@ -625,11 +766,29 @@ func _attach_zone(d: Dictionary) -> void:
 		if list.is_empty():
 			continue
 		zone.add_child(_multimesh(house_meshes[kind], list))
-		for t in list:
+		for t in list if body else []:
 			var hcs := CollisionShape3D.new()
 			hcs.shape = house_shapes[kind]
 			hcs.transform = t * Transform3D(Basis(), house_centres[kind])
 			body.add_child(hcs)
+
+	var lamps: Array[Transform3D] = d.lamps
+	if not lamps.is_empty():
+		zone.add_child(_multimesh(lamp_mesh, lamps))
+		for t in lamps:
+			var light := OmniLight3D.new()
+			light.position = t.origin + Vector3.UP * (LAMP_HEIGHT + 0.2)
+			light.light_color = LAMP_COLOR
+			light.light_energy = 1.6
+			light.omni_range = 11.0
+			light.omni_attenuation = 1.4
+			light.visible = lamps_on
+			light.add_to_group("lamp_light")
+			zone.add_child(light)
+			var lcs := CollisionShape3D.new()
+			lcs.shape = lamp_shape
+			lcs.position = t.origin + Vector3.UP * (LAMP_HEIGHT / 2.0)
+			body.add_child(lcs)  # lamps only exist in full zones, which have a body
 
 	var all_flowers: Array = d.flowers
 	for kind in all_flowers.size():
@@ -648,12 +807,9 @@ func _attach_zone(d: Dictionary) -> void:
 		water.position.y = WATER_LEVEL
 		zone.add_child(water)
 
-	if zones.has(cell):  # rebuilt at a new density: the old zone stays until this one is ready
+	if zones.has(cell):  # rebuilt (density or detail): the old zone stays until this one is ready
 		zones[cell].free()
-	if d.density == density:
-		stale.erase(cell)
-	else:
-		stale[cell] = true
+	built[cell] = [d.density, d.detail]
 	zone_trees[cell] = d.trees
 	zones[cell] = zone
 	add_child(zone)
@@ -661,9 +817,7 @@ func _attach_zone(d: Dictionary) -> void:
 
 ## O: more or fewer trees, rocks and flowers. Loaded zones are rebuilt in the background, nearest first.
 func set_density(d: float) -> void:
-	density = d
-	for cell in zones:
-		stale[cell] = true
+	density = d  # every built zone is now outdated (see _outdated)
 	_update_hud()
 
 
@@ -680,10 +834,17 @@ func set_view_dist(d: float) -> void:
 
 func _unhandled_input(e: InputEvent) -> void:
 	if e is InputEventKey and e.pressed and not e.echo:
+		var dir := -1 if e.shift_pressed else 1
 		if e.physical_keycode == KEY_O:
-			set_density(DENSITIES[(DENSITIES.find(density) + 1) % DENSITIES.size()])
+			set_density(_step(density, DENSITY_STEP * dir, DENSITY_STEP, DENSITY_MAX))
 		elif e.physical_keycode == KEY_P:
-			set_view_dist(VIEW_DISTS[(VIEW_DISTS.find(view_dist) + 1) % VIEW_DISTS.size()])
+			set_view_dist(_step(view_dist, VIEW_STEP * dir, VIEW_DIST, VIEW_MAX))
+
+
+## `v + step`, wrapped into [lo, hi] (past one end → the other end).
+static func _step(v: float, step: float, lo: float, hi: float) -> float:
+	var n := snappedf(v + step, absf(step))
+	return lo if n > hi + 0.001 else (hi if n < lo - 0.001 else n)
 
 
 ## One draw call for every instance of `mesh` in a zone; `colors` (optional) tints each instance.
@@ -729,7 +890,7 @@ func _ground_color(h: float, up: float) -> Color:
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O objets · P portée\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m" % [
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O/Shift+O objets · P/Shift+P portée\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m" % [
 		zones.size(), seasons.NAMES[seasons.season], daynight.clock(), density, view_dist]
 
 

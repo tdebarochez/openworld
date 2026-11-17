@@ -76,12 +76,17 @@ func _init() -> void:
 	# houses sit off the roads and away from each other, and the layout clears trees there.
 	var villages := 0
 	var roads := 0
+	var lamps := 0
 	for gx in range(-5, 5):
 		for gz in range(-5, 5):
 			var g := Vector2i(gx, gz)
 			var v: Dictionary = w.village(g)
 			if not v.is_empty():
 				villages += 1
+				for lp: Vector3 in v.lamps:
+					lamps += 1
+					for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+						assert(not w._near_line(Vector2(lp.x, lp.z), [w.road(g, g + d)], w.ROAD_HALF + 0.5), "lamp on a road")
 				for hs in v.houses:
 					var p := Vector2(hs[0].x, hs[0].z)
 					assert(hs[0].y > w.WATER_LEVEL)
@@ -94,8 +99,8 @@ func _init() -> void:
 					roads += 1
 					for p in r:
 						assert(w.height(p.x, p.y) >= w.WATER_LEVEL + 0.5)
-	print("villages %d, roads %d over 4 x 4 km" % [villages, roads])
-	assert(villages > 0 and roads > 0)
+	print("villages %d, roads %d, street lamps %d over 4 x 4 km" % [villages, roads, lamps])
+	assert(villages > 0 and roads > 0 and lamps > villages * 5)
 	for gx in range(-3, 3):  # a zone with a house: no tree within the house's clearing
 		var v: Dictionary = w.village(Vector2i(gx, 0))
 		if v.is_empty() or v.houses.is_empty():
@@ -108,6 +113,7 @@ func _init() -> void:
 			for t in models:
 				assert(Vector2(t.origin.x, t.origin.z).distance_to(local) > 7.0, "tree inside a house")
 		assert(lay.houses.any(func(l): return not l.is_empty()))
+		assert(not lay.lamps.is_empty(), "no street lamp in a village zone")
 		break
 	for season in ["summer", "autumn", "winter", "spring"]:
 		assert(w.flowers.any(func(f): return season in f.bloom), "nothing blooms in " + season)
