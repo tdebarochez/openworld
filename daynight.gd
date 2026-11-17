@@ -7,8 +7,11 @@ extends Node
 ## comes from a separate sky-only light: lit by the dim scene light, it showed as a dark blob in
 ## front of the bright winter haze at sunset.
 
-const NOON := 13.0  # sun due south at its highest; uniform rotation → sunrise 7:00, sunset 19:00
-const NOON_ELEVATION := deg_to_rad(55.0)
+const NOON := 13.0  # sun due south at its highest
+# Real sun path at a mid-latitude: noon elevation 90° - LATITUDE + declination (67° summer, 21° winter),
+# so summer days are long and winter days short. Dusk, moon, stars and disc all follow dir.y.
+const LATITUDE := deg_to_rad(46.0)
+const DECLINATION := [deg_to_rad(23.4), 0.0, deg_to_rad(-23.4), 0.0]  # by seasons.Season
 const START := 10.0
 const DAY_SECONDS := 1200.0  # real seconds per game day (20 min)
 const SCRUB_SPEED := 2.0  # game hours per real second while + or - is held
@@ -81,10 +84,13 @@ func clock() -> String:
 	return "%02d:%02d" % [m / 60, m % 60]
 
 
-## Unit vector towards the sun: rises due east (+X), due south (+Z) at NOON, sets due west.
-static func sun_dir(h: float) -> Vector3:
-	var a := (h - NOON) / 24.0 * TAU
-	return Vector3(-sin(a), cos(a) * sin(NOON_ELEVATION), cos(a) * cos(NOON_ELEVATION))
+## Unit vector towards the sun (+X east, +Y up, +Z south) for a solar declination: rises in the east
+## (north of it in summer, south in winter), due south at NOON, sets in the west.
+static func sun_dir(h: float, decl := 0.0) -> Vector3:
+	var a := (h - NOON) / 24.0 * TAU  # hour angle
+	return Vector3(-cos(decl) * sin(a),
+		sin(LATITUDE) * sin(decl) + cos(LATITUDE) * cos(decl) * cos(a),
+		sin(LATITUDE) * cos(decl) * cos(a) - cos(LATITUDE) * sin(decl))
 
 
 func apply() -> void:
@@ -93,9 +99,10 @@ func apply() -> void:
 	var sun: DirectionalLight3D = world.seasons.sun
 	var sky: ProceduralSkyMaterial = world.seasons.sky
 	var env: Environment = world.seasons.env
-	var dir := sun_dir(time)
+	var dir := sun_dir(time, DECLINATION[world.seasons.season])
 	var day := smoothstep(-0.15, 0.2, dir.y)
-	var warm := 1.0 - smoothstep(0.0, 0.3, absf(dir.y - 0.02))  # peaks at sunrise/sunset
+	# Peaks at sunrise/sunset, gone by ~11° so the low winter sun (10:00 ≈ 9.5°) doesn't paint a dawn sky.
+	var warm := 1.0 - smoothstep(0.0, 0.2, absf(dir.y - 0.02))
 	if dir.y >= 0.0:
 		sun.basis = Basis.looking_at(-dir)
 		sun.light_color = s.sun * Color.WHITE.lerp(SUN_WARM, warm)
