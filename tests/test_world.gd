@@ -122,6 +122,64 @@ func _init() -> void:
 		assert(lay.houses.any(func(l): return not l.is_empty()))
 		assert(not lay.lamps.is_empty(), "no street lamp in a village zone")
 		break
+	# Benches, planters and village flowers: deterministic, off the roads, out of the houses, clear of
+	# the lamps and of each other; benches face the square, planters stand against a front wall; a
+	# village zone's layout and full build carry them.
+	var benches := 0
+	var planters := 0
+	var plants := 0
+	var garden: Array = w.VILLAGE_FLOWERS.map(func(n): return w.flowers.find_custom(func(f): return f.name == n))
+	var spawn_village: Vector2i
+	for gx in range(-5, 5):
+		for gz in range(-5, 5):
+			var g := Vector2i(gx, gz)
+			var v: Dictionary = w.village(g)
+			if v.is_empty():
+				continue
+			if v.centre.distance_to(Vector2(133.7, -143.1)) < 5.0:
+				spawn_village = g
+			var again: Dictionary = w._village(g)
+			assert(again.props == v.props and again.flowers == v.flowers)
+			var near_roads := []
+			for d in w.LINK_OFFSETS:
+				near_roads.append(w.road(g, g + d))
+			var bench_list: Array = v.props.filter(func(o): return o[2] != w.Prop.PLANTER)
+			for pr in v.props:
+				var p := Vector2(pr[0].x, pr[0].z)
+				var planter: bool = pr[2] == w.Prop.PLANTER
+				assert(not w._near_line(p, near_roads, w.ROAD_HALF + 0.8), "bench or planter on a road")
+				assert(not w.in_house(p, v.houses, 0.1 if planter else 0.8), "bench or planter in a house")
+				assert(w.in_house(p, v.houses, 0.6) == planter, "planter off a house front")
+				assert(w._far_from(p, v.lamps, 0.9 if planter else 1.2), "bench or planter against a lamp")
+				assert(w._far_from(p, v.props.filter(func(o): return o != pr), 0.9 if planter else 1.8), "props overlap")
+				if not planter:
+					var front: Vector3 = Basis(Vector3.UP, pr[1]) * Vector3.BACK
+					assert(Vector2(front.x, front.z).dot((v.centre - p).normalized()) > 0.99, "bench not facing the square")
+			benches += bench_list.size()
+			planters += v.props.size() - bench_list.size()
+			for i in v.flowers.size():
+				var f: Array = v.flowers[i]
+				var p := Vector2(f[0].x, f[0].z)
+				assert(f[2] in garden)
+				assert(not w._near_line(p, near_roads, w.ROAD_HALF + 0.3), "flower on a road")
+				assert(not w.in_house(p, v.houses, 0.1), "flower in a house")
+				assert(w._far_from(p, v.lamps, 0.5) and w._far_from(p, bench_list, 0.9), "flower against a lamp or bench")
+				for j in i:
+					assert(p.distance_to(Vector2(v.flowers[j][0].x, v.flowers[j][0].z)) > 0.1, "flowers overlap")
+			plants += v.flowers.size()
+	print("benches %d, planters %d, village flowers %d over %d villages" % [benches, planters, plants, villages])
+	assert(benches >= villages * 2 and planters >= villages * 4 and plants >= villages * 40)
+	var sv: Dictionary = w.village(spawn_village)
+	print("spawn village: %d houses, %d lamps, %d props, %d flowers" % [sv.houses.size(), sv.lamps.size(), sv.props.size(), sv.flowers.size()])
+	var vcell: Vector2i = w.cell_of(sv.props[0][0])
+	var vlay: Dictionary = w.layout(vcell)
+	assert(not vlay.props[w.Prop.PLANTER].is_empty() and not (vlay.props[0] + vlay.props[1]).is_empty(), "no bench or planter in a village zone")
+	assert(vlay.flowers.any(func(l): return not l.is_empty()), "no flower in a village zone")
+	var wild: Array = w.flower_transforms(vcell, vlay.mask)
+	var full: Dictionary = w._build_zone(vcell)
+	for k in wild.size():
+		assert(full.flowers[k].size() == wild[k].size() + vlay.flowers[k].size())
+	assert(w._build_zone(vcell, w.Detail.LIGHT).props.is_empty())
 	for season in ["summer", "autumn", "winter", "spring"]:
 		assert(w.flowers.any(func(f): return season in f.bloom), "nothing blooms in " + season)
 	assert(rocks_plain + rocks_hill > 0)
