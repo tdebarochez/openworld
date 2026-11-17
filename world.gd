@@ -75,6 +75,7 @@ var noise := FastNoiseLite.new()
 var seasons := preload("res://seasons.gd").new()
 var terrain_mat: ShaderMaterial = seasons.terrain_mat  # recolours the vertex colours per season
 var daynight  # daynight.gd, made in _ready
+var weather  # weather.gd, same
 var water_mat := StandardMaterial3D.new()
 var species: Array[Mesh] = []  # indexed by kind * TREE_VARIANTS + variant
 var bush_meshes: Array[Mesh] = []  # indexed by kind * BUSH_VARIANTS + variant
@@ -177,6 +178,9 @@ func _ready() -> void:
 	daynight = preload("res://daynight.gd").new()
 	daynight.world = self
 	add_child(daynight)  # after seasons.setup(): applies its light for the hour
+	weather = preload("res://weather.gd").new()
+	weather.world = self
+	add_child(weather)
 	add_child(preload("res://birds.gd").new())  # finds the world as its parent
 	add_child(preload("res://clouds.gd").new())  # same
 	var layer := CanvasLayer.new()
@@ -1127,8 +1131,8 @@ func _ground_color(h: float, up: float) -> Color:
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O/Shift+O objets · P/Shift+P portée\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m" % [
-		zones.size(), seasons.NAMES[seasons.season], daynight.clock(), density, view_dist]
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O/Shift+O objets · P/Shift+P portée · N/Shift+N météo\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m\n%s" % [
+		zones.size(), seasons.NAMES[seasons.season], daynight.clock(), density, view_dist, weather.label if weather else ""]
 
 
 func _setup_environment() -> void:

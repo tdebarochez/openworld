@@ -300,6 +300,38 @@ def land():
     return thud + crunch
 
 
+def rumble(rng, t, cutoff, bumps):
+    """Thunder roll: twice-lowpassed noise swelling and fading in random bumps (echoes off the clouds and
+    hills), the whole thing dying away over a few seconds."""
+    x = lowpass(lowpass(rng.normal(0, 1, len(t)), cutoff), cutoff)
+    swell = np.zeros_like(t)
+    for _ in range(bumps):
+        at, width = rng.uniform(0.0, t[-1] * 0.6), rng.uniform(0.2, 0.9)
+        swell += rng.uniform(0.3, 1.0) * np.exp(-((t - at) / width) ** 2)
+    return x * (0.4 + swell) * np.exp(-t / (t[-1] * 0.35))
+
+
+def thunder_near():
+    """Close strike: a sharp tearing crack with crackles, then a deep roll."""
+    rng = np.random.default_rng(400)
+    t = np.arange(int(6.0 * RATE)) / RATE
+    noise = rng.normal(0, 1, len(t))
+    crack = (noise - lowpass(noise, 1500)) * env(t, 0.001, 0.06) * 2.5
+    for _ in range(6):  # crackles along the channel
+        at = rng.uniform(0.03, 0.5)
+        tt = np.clip(t - at, 0, None)
+        crack += lowpass(rng.normal(0, 1, len(t)), 3000) * env(tt, 0.001, 0.03) * (t > at) * rng.uniform(0.4, 1.0)
+    boom = np.sin(2 * np.pi * np.cumsum(55 * np.exp(-t / 0.4) + 30) / RATE) * env(t, 0.01, 0.5) * 0.8
+    return crack + boom + rumble(rng, t, 250, 6) * 6
+
+
+def thunder_far():
+    """Distant strike: only the low roll is left, slow to build."""
+    rng = np.random.default_rng(500)
+    t = np.arange(int(5.0 * RATE)) / RATE
+    return rumble(rng, t, 120, 5) * np.minimum(t / 0.5, 1.0)
+
+
 # --- output -----------------------------------------------------------------------------------------
 def write(name, x, peak, loop=False):
     x = x / np.max(np.abs(x)) * peak
@@ -338,6 +370,8 @@ def main():
         write(f"step_{i + 1}.wav", footstep(i), 0.8)
     write("jump.wav", jump(), 0.7)
     write("land.wav", land(), 0.8)
+    write("thunder_near.wav", thunder_near(), 0.9)
+    write("thunder_far.wav", thunder_far(), 0.7)
 
 
 if __name__ == "__main__":

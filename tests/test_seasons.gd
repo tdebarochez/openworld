@@ -103,8 +103,13 @@ func _check():
 				for m: Mesh in w.house_meshes:  # walls, wood (balconies), glass and stone stay bare
 					for i in [0, 2, 3, 4]:
 						assert(m.surface_get_material(i) is StandardMaterial3D, "snow off the roof")
-				assert(s.snow.emitting)
 				assert(w.seasons.sun.light_energy < sun_energy)
+				# Snow follows the weather: none in fair weather, falling under nimbostratus (not rain).
+				assert(not s.snow.emitting)
+				w.weather.set_preset(w.weather.G.NS + 1)
+				assert(s.snow.emitting and s.snow.visible and not w.weather.rain_fx.emitting)
+				w.weather.set_preset(0)
+				assert(not s.snow.emitting and not s.snow.visible)
 			S.SUMMER:
 				assert(bare == 0)
 				assert(conifer_mat == s.leaf_mats[0])
