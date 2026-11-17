@@ -23,6 +23,9 @@ const COARSE_RES := 4  # m between coarse terrain vertices (= map pixel size)
 const SKIRT := 4.0  # m the coarse zone's edges hang down
 const TREE_ATTEMPTS := 400  # random spots tried per zone; most are rejected (water, slope, clearing)
 const TREE_VARIANTS := 3  # models per species (tools/make_trees.py)
+const BUSH_CLUSTERS := 150  # bush groups tried per zone; only bushes on a forest edge are kept
+const BUSH_VARIANTS := 3  # models per kind (tools/make_bushes.py)
+const BUSH_EDGE := 0.15  # forest() band (~6 m) outside the edge (0) where bushes grow; half as wide under the trees
 const ROCK_ATTEMPTS := 40  # ~6 rocks per zone on plains, ~30 in hills
 const ROCK_KINDS := 5  # tools/make_rocks.py; rock_3 is a pebble (no collision)
 const FLOWER_CLUSTERS := 40  # flower beds tried per zone; about half fit their species' habitat
@@ -49,6 +52,10 @@ enum { FREE, CLEAR, ROAD }  # layout mask: CLEAR = no trees/rocks/flowers, ROAD 
 const MAX_JOBS := 4  # zones built in parallel on worker threads
 const MAP_PX := 32  # map pixels per zone side (4 m per pixel)
 enum TreeKind { CONIFER, OAK, BIRCH }
+enum BushKind { HAZEL, HOLLY, BRAMBLE }
+# Seasons treat each BushKind like this TreeKind: hazel bare in winter, holly evergreen with snow,
+# bramble keeping the odd dead leaf.
+const BUSH_LEAVES := [TreeKind.BIRCH, TreeKind.CONIFER, TreeKind.OAK]
 
 var view_dist := VIEW_DIST
 # Placement attempts are drawn in a fixed order, so a higher density keeps every existing object and adds more.
@@ -65,6 +72,7 @@ var terrain_mat: ShaderMaterial = seasons.terrain_mat  # recolours the vertex co
 var daynight  # daynight.gd, made in _ready
 var water_mat := StandardMaterial3D.new()
 var species: Array[Mesh] = []  # indexed by kind * TREE_VARIANTS + variant
+var bush_meshes: Array[Mesh] = []  # indexed by kind * BUSH_VARIANTS + variant
 var trunk_shape := CylinderShape3D.new()
 var rock_meshes: Array[Mesh] = []
 var rock_shapes: Array[Shape3D] = []  # convex hull per rock kind, null for the pebble
@@ -105,6 +113,9 @@ func _init() -> void:
 	for file in ["conifer", "oak", "birch"]:  # TreeKind order
 		for v in TREE_VARIANTS:
 			species.append(_tintable_leaves(_load_mesh("res://assets/trees/%s_%d.glb" % [file, v])))
+	for file in ["hazel", "holly", "bramble"]:  # BushKind order
+		for v in BUSH_VARIANTS:
+			bush_meshes.append(_tintable_leaves(_load_mesh("res://assets/bushes/%s_%d.glb" % [file, v])))
 	for r in ROCK_KINDS:
 		var m := _load_mesh("res://assets/rocks/rock_%d.glb" % r)
 		rock_meshes.append(m)
@@ -209,7 +220,7 @@ func tree_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 		var h := height(wx, wz)
 		if h < WATER_LEVEL + 2.0 or h > 20.0 or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
 			continue
-		if noise.get_noise_2d(wx * 4.0 + 5000.0, wz * 4.0) < 0.0:  # forests vs clearings
+		if forest(wx, wz) < 0.0:  # forests vs clearings
 			continue
 		# Species in groves: conifers up high, oak/birch patches below.
 		var v := noise.get_noise_2d(wx * 2.0 - 7000.0, wz * 2.0)
@@ -217,6 +228,44 @@ func tree_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 		# Variant from position, not the RNG, so adding variants never moved existing trees.
 		var variant := hash(Vector3i(roundi(wx * 10.0), roundi(wz * 10.0), 7)) % TREE_VARIANTS
 		out[kind * TREE_VARIANTS + variant].append(Transform3D(Basis(Vector3.UP, rot).scaled(Vector3.ONE * s), Vector3(lx, h, lz)))
+	return out
+
+
+## Forest field: trees grow where it is ≥ 0, clearings below; forest edges are where it crosses 0.
+func forest(x: float, z: float) -> float:
+	return noise.get_noise_2d(x * 4.0 + 5000.0, z * 4.0)
+
+
+## Bush placements per model (zone-local), in groups of one kind along forest edges: a band of
+## forest() on both sides of 0, densest right at the edge and half as wide under the outer trees.
+## Deterministic per seed + cell.
+func bush_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3i(noise.seed + 5, cell.x, cell.y))
+	var half := ZONE_SIZE / 2.0
+	var out := []
+	for k in BushKind.size() * BUSH_VARIANTS:
+		out.append([] as Array[Transform3D])
+	for c in roundi(BUSH_CLUSTERS * density):
+		var cx := rng.randf_range(-half, half)
+		var cz := rng.randf_range(-half, half)
+		var kind := rng.randi() % BushKind.size()
+		var spots := []  # all drawn before any rejection, so the RNG sequence stays fixed
+		for i in rng.randi_range(2, 6):
+			spots.append([rng.randfn(0.0, 3.0), rng.randfn(0.0, 3.0), rng.randf(), rng.randf_range(0.8, 1.25), rng.randf() * TAU])
+		for sp in spots:
+			var lx := clampf(cx + sp[0], -half, half - 0.01)
+			var lz := clampf(cz + sp[1], -half, half - 0.01)
+			var wx := cell.x * ZONE_SIZE + lx
+			var wz := cell.y * ZONE_SIZE + lz
+			var e := forest(wx, wz)
+			if sp[2] >= 1.0 - absf(e) / (BUSH_EDGE if e < 0.0 else BUSH_EDGE * 0.5):  # 1 at the edge → 0 at the band's end
+				continue
+			var h := height(wx, wz)
+			if h < WATER_LEVEL + 1.0 or h > 20.0 or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
+				continue
+			var variant := hash(Vector3i(roundi(wx * 10.0), roundi(wz * 10.0), 8)) % BUSH_VARIANTS
+			out[kind * BUSH_VARIANTS + variant].append(Transform3D(Basis(Vector3.UP, sp[4]).scaled(Vector3.ONE * sp[3]), Vector3(lx, h, lz)))
 	return out
 
 
@@ -714,6 +763,7 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 	var rocks := rock_transforms(cell, mask) if full else []
 	return {"cell": cell, "density": dens, "detail": detail, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
 		"rocks": rocks, "flowers": flower_transforms(cell, mask) if full else [], "houses": lay.houses,
+		"bushes": bush_transforms(cell, mask) if full else [],
 		"lamps": lay.lamps if full else ([] as Array[Transform3D]),
 		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask, res)}
 
@@ -792,6 +842,18 @@ func _attach_zone(d: Dictionary) -> void:
 			tcs.shape = trunk_shape
 			tcs.position = t.origin + Vector3.UP
 			body.add_child(tcs)
+
+	var all_bushes: Array = d.bushes  # no collision: the player walks through them
+	for model in all_bushes.size():
+		var list: Array[Transform3D] = all_bushes[model]
+		if list.is_empty():
+			continue
+		var tints := PackedColorArray()
+		for t in list:
+			tints.append(seasons.leaf_color(BUSH_LEAVES[model / BUSH_VARIANTS], zone.position + t.origin))
+		var mmi := _multimesh(bush_meshes[model], list, tints)
+		mmi.set_meta("bushes", list)  # seasons.gd recolours them like trees
+		zone.add_child(mmi)
 
 	var all_rocks: Array = d.rocks
 	for kind in all_rocks.size():

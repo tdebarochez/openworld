@@ -68,9 +68,9 @@ void fragment() {
 var world  # world.gd, set before any zone is attached
 var season := Season.SUMMER
 var terrain_mat := ShaderMaterial.new()
-var leaf_mats: Array[StandardMaterial3D] = []  # per tree model, the tintable leaves material
+var leaf_mats: Array[StandardMaterial3D] = []  # per tree model then bush model, the tintable leaves material
 var leaf_albedo: Array[Color] = []  # its summer colour
-var snowy_mats: Array[ShaderMaterial] = []  # per tree model, winter leaves (used for conifers)
+var snowy_mats: Array[ShaderMaterial] = []  # same indices, winter leaves (used for conifers and holly)
 var roof_mats: Array[Material] = []  # per house kind, the roof (surface 1, tools/make_houses.py)
 var snowy_roofs: Array[ShaderMaterial] = []  # same snowy shader: white on the slopes, roof colour below
 var env: Environment
@@ -110,8 +110,8 @@ func setup() -> void:
 	light = base
 	var shader := Shader.new()
 	shader.code = SNOWY_LEAVES_SHADER
-	for model in world.species.size():
-		var mat := world.species[model].surface_get_material(1) as StandardMaterial3D
+	for mesh: Mesh in world.species + world.bush_meshes:  # bushes follow their trees' seasons
+		var mat := mesh.surface_get_material(1) as StandardMaterial3D
 		leaf_mats.append(mat)
 		leaf_albedo.append(mat.albedo_color)
 		var snowy := ShaderMaterial.new()
@@ -152,17 +152,19 @@ func set_season(s: Season) -> void:
 	world.water_mat.roughness = 0.4 if winter else base.water_rough
 	for k in world.house_meshes.size():  # snow on the roofs (shared meshes: every zone at once)
 		world.house_meshes[k].surface_set_material(1, snowy_roofs[k] if winter else roof_mats[k])
-	for model in world.species.size():
-		if model / world.TREE_VARIANTS == world.TreeKind.CONIFER:
-			world.species[model].surface_set_material(1, snowy_mats[model] if winter else leaf_mats[model])
+	var meshes: Array = world.species + world.bush_meshes  # same order as leaf_mats
+	for model in meshes.size():
+		if leaf_kind(meshes[model]) == world.TreeKind.CONIFER:
+			meshes[model].surface_set_material(1, snowy_mats[model] if winter else leaf_mats[model])
 		else:  # deciduous: instance colour carries the whole colour (and alpha = leafless in winter)
 			leaf_mats[model].albedo_color = leaf_albedo[model] if s == Season.SUMMER else Color.WHITE
 			leaf_mats[model].transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR if winter \
 				else BaseMaterial3D.TRANSPARENCY_DISABLED
 	for zone: Node3D in world.zones.values():
 		for mmi in zone.get_children():
-			if mmi.has_meta("trees"):
-				_recolour(mmi.multimesh, mmi.get_meta("trees"), zone.position)
+			for key in ["trees", "bushes"]:
+				if mmi.has_meta(key):
+					_recolour(mmi.multimesh, mmi.get_meta(key), zone.position)
 	var l: Dictionary = LIGHT[s]
 	light = {"sun": base.sun * l.sun, "energy": base.energy * l.energy, "haze": base.haze.lerp(l.haze, l.mix),
 		"top": base.top.lerp(l.haze, l.mix * 0.5), "fog": base.fog * l.fog,
@@ -199,10 +201,16 @@ func leaf_color(kind: int, p: Vector3) -> Color:
 	return Color(c.r * tint.g, c.g * tint.g, c.b * tint.g)  # tint.g = per-tree brightness
 
 
+## TreeKind whose seasons a tree or bush model follows (world.BUSH_LEAVES for bushes).
+func leaf_kind(mesh: Mesh) -> int:
+	var m: int = world.species.find(mesh)
+	return m / world.TREE_VARIANTS if m >= 0 else world.BUSH_LEAVES[world.bush_meshes.find(mesh) / world.BUSH_VARIANTS]
+
+
 ## Rewrites a tree MultiMesh in one buffer upload (3x4 row-major transform + colour per instance),
 ## from the zone's placements rather than reading the GPU buffer back.
 func _recolour(mm: MultiMesh, trees: Array, origin: Vector3) -> void:
-	var kind: int = world.species.find(mm.mesh) / world.TREE_VARIANTS
+	var kind := leaf_kind(mm.mesh)
 	var buf := PackedFloat32Array()
 	for t: Transform3D in trees:
 		var b := t.basis

@@ -72,6 +72,49 @@ func _init() -> void:
 					assert(t.origin.y >= w.WATER_LEVEL + 0.2)
 	print("flowers over 81 zones: ", w.flowers.map(func(f): return f.name), " ", per_flower)
 	assert(per_flower.min() > 0)
+	# Bushes: deterministic, only in the forest-edge band and out of the water, every model used, a
+	# higher density keeps density 1's bushes; only full zones get them.
+	assert(w.bush_transforms(Vector2i(2, -1)) == w.bush_transforms(Vector2i(2, -1)))
+	var per_bush := []
+	per_bush.resize(3 * w.BUSH_VARIANTS)
+	per_bush.fill(0)
+	for cx in range(-3, 3):
+		for cz in range(-3, 3):
+			var cell := Vector2i(cx, cz)
+			var models: Array = w.bush_transforms(cell)
+			for m in models.size():
+				per_bush[m] += models[m].size()
+				for t in models[m]:
+					var e: float = w.forest(cx * w.ZONE_SIZE + t.origin.x, cz * w.ZONE_SIZE + t.origin.z)
+					assert(e > -w.BUSH_EDGE and e < w.BUSH_EDGE * 0.5, "bush off the forest edge: %f" % e)
+					assert(t.origin.y >= w.WATER_LEVEL + 1.0)
+			if cx == 0:
+				w.density = 2.0
+				var dense: Array = w.bush_transforms(cell)
+				w.density = 1.0
+				for m in models.size():
+					for t in models[m]:
+						assert(t in dense[m], "density 2 lost a bush")
+	print("bushes per model over 36 zones: ", per_bush)
+	assert(per_bush.min() > 0)
+	var has_bushes := func(cell): return w.zones[cell].get_children().any(func(c): return c.has_meta("bushes"))
+	assert(has_bushes.call(Vector2i.ZERO))
+	w.add_zone(Vector2i(0, -1), w.Detail.LIGHT)
+	assert(not w.bush_transforms(Vector2i(0, -1)).all(func(l): return l.is_empty()))
+	assert(not has_bushes.call(Vector2i(0, -1)), "bushes in a light zone")
+	var unmasked_blocked := 0  # bushes the roads/villages mask had to remove, within ~1.5 km
+	for cx in range(-12, 12):
+		for cz in range(-12, 12):
+			var cell := Vector2i(cx, cz)
+			var mask: PackedByteArray = w.layout(cell).mask
+			if not mask.has(w.ROAD) and not mask.has(w.CLEAR):
+				continue
+			for models in w.bush_transforms(cell, mask):
+				for t in models:
+					assert(not w._blocked(mask, t.origin.x, t.origin.z), "bush on a road or in a village")
+			for models in w.bush_transforms(cell):
+				unmasked_blocked += models.filter(func(t): return w._blocked(mask, t.origin.x, t.origin.z)).size()
+	assert(unmasked_blocked > 0, "no road crosses a forest edge: the mask check above tested nothing")
 	# Villages and roads: some exist within 2 km, roads are symmetric and cross no water,
 	# houses sit off the roads and away from each other, and the layout clears trees there.
 	var villages := 0
