@@ -83,6 +83,9 @@ func _init() -> void:
 			var v: Dictionary = w.village(g)
 			if not v.is_empty():
 				villages += 1
+				# The web renderer lights each object (a zone's terrain holds a whole village) with at most
+				# this many lights; past it, some lamps would neither light nor shade the ground.
+				assert(v.lamps.size() <= ProjectSettings.get_setting("rendering/limits/opengl/max_lights_per_object"))
 				for lamp in v.lamps:
 					var lp: Vector3 = lamp[0]
 					lamps += 1

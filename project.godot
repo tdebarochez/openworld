@@ -9,3 +9,4 @@ config/features=PackedStringArray("4.7")
 [rendering]
 
 renderer/rendering_method.web="gl_compatibility"
+limits/opengl/max_lights_per_object=16
