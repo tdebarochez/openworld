@@ -226,7 +226,7 @@ func _setup_rain() -> void:
 	drop.size = Vector2(0.02, 0.6)
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.albedo_color = Color(0.75, 0.8, 0.88, 0.45)
+	mat.albedo_color = Color(world.seasons.colour("stone"), 0.45)
 	mat.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y  # upright streak facing the camera, all views
 	mat.billboard_keep_scale = true
 	drop.material = mat

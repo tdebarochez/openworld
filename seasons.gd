@@ -7,29 +7,31 @@ extends Node
 enum Season { SUMMER, AUTUMN, WINTER, SPRING }
 const NAMES := ["Été", "Automne", "Hiver", "Printemps"]
 
+const SEASON_KEYS := ["summer", "autumn", "winter", "spring"]  # as in assets/flowers/flowers.json and palette.json
+# Every colour of the game, by name (assets/palette.json, also read by tools/make_*.py).
+static var palette: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://assets/palette.json"))
 # Ground colours (sRGB) per season: sand, rock, peak, grass, road. Summer = world._ground_color and
-# world.ROAD_COLOR, which the terrain shader uses as keys to recognise each category in the mesh.
-const GROUND := [
-	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.3, 0.55, 0.2), Color(0.55, 0.45, 0.32)],
-	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.56, 0.5, 0.27), Color(0.5, 0.4, 0.28)],
-	[Color(0.84, 0.85, 0.89), Color(0.5, 0.5, 0.53), Color(0.97, 0.98, 1.0), Color(0.9, 0.92, 0.96), Color(0.76, 0.75, 0.76)],
-	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.38, 0.68, 0.24), Color(0.55, 0.45, 0.32)],
-]
-const AUTUMN_LEAVES := [Color(0.9, 0.7, 0.12), Color(0.9, 0.45, 0.08), Color(0.75, 0.16, 0.06),
-	Color(0.5, 0.3, 0.12), Color(0.85, 0.55, 0.1)]
-const DRY_LEAVES := Color(0.45, 0.3, 0.15)  # the odd oak keeps its dead leaves in winter
-const FRESH_LEAVES := Color(0.5, 0.8, 0.28)
-const BLOSSOM := [Color(0.97, 0.78, 0.85), Color(0.97, 0.95, 0.92)]
+# world.road_color, which the terrain shader uses as keys to recognise each category in the mesh.
+var GROUND := SEASON_KEYS.map(func(s): return colours(palette.ground[s]))
+var AUTUMN_LEAVES := colours(palette.autumn_leaves)
+var DRY_LEAVES := colour(palette.dry_leaves)  # the odd oak keeps its dead leaves in winter
+var FRESH_LEAVES := colour(palette.fresh_leaves)
+var BLOSSOM := colours(palette.blossom)
 # Sun colour/energy, haze (sky horizon + fog colour) target and mix, fog start relative to summer,
 # shadow opacity relative to summer (winter's overcast light: softer shadows, incl. the snowflakes').
-const LIGHT := [
-	{"sun": Color.WHITE, "energy": 1.0, "haze": Color.WHITE, "mix": 0.0, "fog": 1.0, "shadow": 1.0},
-	{"sun": Color(1.0, 0.85, 0.68), "energy": 0.9, "haze": Color(0.86, 0.76, 0.64), "mix": 0.45, "fog": 0.7, "shadow": 1.0},
-	{"sun": Color(0.8, 0.88, 1.0), "energy": 0.65, "haze": Color(0.82, 0.86, 0.92), "mix": 0.7, "fog": 0.5, "shadow": 0.45},
-	{"sun": Color(1.0, 0.98, 0.9), "energy": 1.05, "haze": Color(0.78, 0.88, 0.96), "mix": 0.2, "fog": 1.1, "shadow": 1.0},
-]
-const PETALS := [Color(0.97, 0.62, 0.76), Color(0.95, 0.5, 0.68), Color(0.98, 0.8, 0.88)]  # pink reads on the sky
-const ICE := Color(0.62, 0.75, 0.86, 0.95)
+var LIGHT := SEASON_KEYS.map(func(s): return palette.light[s].merged(
+	{"sun": colour(palette.light[s].sun), "haze": colour(palette.light[s].haze)}, true))
+var PETALS := colours(palette.petals)  # pink reads on the sky
+var ICE := colour(palette.ice)
+
+
+## A palette colour by name, or a hex value.
+static func colour(key: String) -> Color:
+	return Color.html(palette.colours.get(key, key))
+
+
+static func colours(keys: Array) -> Array:
+	return keys.map(colour)
 
 const TERRAIN_SHADER := """
 shader_type spatial;
@@ -55,12 +57,13 @@ const SNOWY_LEAVES_SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
 uniform vec3 leaf : source_color;
+uniform vec3 snow : source_color;
 varying float up;
 void vertex() {
 	up = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz).y;
 }
 void fragment() {
-	ALBEDO = mix(leaf * COLOR.rgb, vec3(0.9, 0.93, 0.97), smoothstep(0.3, 0.7, up));
+	ALBEDO = mix(leaf * COLOR.rgb, snow, smoothstep(0.3, 0.7, up));
 	ROUGHNESS = 0.9;
 }
 """
@@ -77,7 +80,6 @@ var env: Environment
 var sky: ProceduralSkyMaterial
 var sun: DirectionalLight3D
 var base := {}  # summer light values
-const SEASON_KEYS := ["summer", "autumn", "winter", "spring"]  # as in assets/flowers/flowers.json
 var flower_mats := []  # per flower kind: its original material per surface
 var hidden_mat := StandardMaterial3D.new()  # alpha-scissored away, shadows included
 var light := {}  # this season's noon light (keys of base); daynight.gd applies it for the hour
@@ -117,6 +119,7 @@ func setup() -> void:
 		var snowy := ShaderMaterial.new()
 		snowy.shader = shader
 		snowy.set_shader_parameter("leaf", mat.albedo_color)
+		snowy.set_shader_parameter("snow", colour("snow"))
 		snowy_mats.append(snowy)
 	for m: Mesh in world.house_meshes:
 		var roof := m.surface_get_material(1) as StandardMaterial3D
@@ -124,6 +127,7 @@ func setup() -> void:
 		var snowy := ShaderMaterial.new()
 		snowy.shader = shader
 		snowy.set_shader_parameter("leaf", roof.albedo_color)
+		snowy.set_shader_parameter("snow", colour("snow"))
 		snowy_roofs.append(snowy)
 	hidden_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 	hidden_mat.albedo_color = Color(1, 1, 1, 0)
@@ -168,7 +172,7 @@ func set_season(s: Season) -> void:
 	var l: Dictionary = LIGHT[s]
 	light = {"sun": base.sun * l.sun, "energy": base.energy * l.energy, "haze": base.haze.lerp(l.haze, l.mix),
 		"top": base.top.lerp(l.haze, l.mix * 0.5), "fog": base.fog * l.fog,
-		"ambient": base.ambient * l.sun, "shadow": base.shadow * l.shadow}  # ambient: only used by the Compatibility renderer
+		"ambient": base.ambient.lerp(l.haze, l.mix) * l.sun, "shadow": base.shadow * l.shadow}  # ambient: only used by the Compatibility renderer
 	world.daynight.apply()  # final sun/sky/fog = this season's light × time of day × weather
 	_set_flowers()
 	for pair in [[leaves, Season.AUTUMN], [petals, Season.SPRING]]:  # snow: weather.gd (winter precipitation)
@@ -264,6 +268,7 @@ func _setup_snow() -> void:
 	flake.rings = 3
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = colour("snow")
 	flake.material = mat
 	snow.mesh = flake
 	snow.emitting = false

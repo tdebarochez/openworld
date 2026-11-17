@@ -7,6 +7,7 @@ Writes assets/trees/<species>_<n>.glb. Each model is one mesh with two materials
 trunk base at the origin, Y up after export. Seeded, so re-running gives the same models.
 Variants differ by shape parameters (branching, crown, tiers, lean), not just by seed.
 """
+import json
 import math
 import os
 import random
@@ -17,17 +18,20 @@ from mathutils import Matrix, Vector, noise
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "trees")
 BARK, LEAVES = 0, 1
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "palette.json")) as f:
+    PALETTE = json.load(f)["colours"]
 
 
-def linear(srgb):
-    """Blender/glTF colours are linear; the palette below is picked in sRGB like the rest of the game."""
+def linear(colour):
+    """Blender/glTF colours are linear; the game's palette (assets/palette.json) is sRGB hex, by name."""
+    srgb = (int(PALETTE[colour][i:i + 2], 16) / 255 for i in (1, 3, 5))
     return tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in srgb)
 
 
-def material(name, srgb):
+def material(name, colour):
     m = bpy.data.materials.new(name)
     bsdf = m.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = (*linear(srgb), 1.0)
+    bsdf.inputs["Base Color"].default_value = (*linear(colour), 1.0)
     bsdf.inputs["Roughness"].default_value = 0.9
     return m
 
@@ -151,9 +155,9 @@ def conifer(bm, rng, p):
     tube(bm, trunk, lerp_radii(p["r"], 0.06, 4), 5, bumpy=0.1, seed=3)
 
 
-# species -> (builder, bark sRGB, leaves sRGB, [variant params]). Comments say what sets each variant apart.
+# species -> (builder, bark, leaves (palette names), [variant params]). Comments say what sets each variant apart.
 SPECIES = {
-    "conifer": (conifer, (0.4, 0.27, 0.15), (0.13, 0.36, 0.15), [
+    "conifer": (conifer, "bark", "leaf_deep", [
         # classic spruce: 5 even tiers from low down
         dict(tiers=5, z0=1.0, radius=1.9, depth=2.0, shrink=0.78, step=0.55, segs=10, droop=0.35, lean=0.0, r=0.24),
         # tall narrow fir: 7 tight slim tiers
@@ -161,7 +165,7 @@ SPECIES = {
         # old pine-like: bare lower trunk, 4 wide gappy heavily drooping tiers, slight lean
         dict(tiers=4, z0=2.4, radius=2.1, depth=1.4, shrink=0.72, step=0.8, segs=12, droop=0.6, lean=0.07, r=0.26),
     ]),
-    "oak": (oak, (0.33, 0.24, 0.15), (0.24, 0.42, 0.12), [
+    "oak": (oak, "bark", "leaf", [
         # round crown: 5 branches, domed top
         dict(height=2.9, lean=Vector((0, 0, 1)), r=0.42, branches=5, fork=(2, 4), rise=(0.6, 1.1), reach=(1.6, 2.2),
              tip=(1.05, 1.35), mid=2, squash=0.75, spin=0.0, top=[((0, 0, 1.8), 1.6)]),
@@ -172,7 +176,7 @@ SPECIES = {
         dict(height=3.4, lean=Vector((0.22, 0.08, 1)), r=0.38, branches=3, fork=(3, 4), rise=(1.2, 1.7), reach=(1.4, 1.9),
              tip=(1.0, 1.25), mid=3, squash=0.8, spin=1.0, top=[((0.3, 0, 1.4), 1.4), ((-0.4, 0.3, 2.6), 1.0)]),
     ]),
-    "birch": (birch, (0.88, 0.87, 0.82), (0.5, 0.68, 0.22), [
+    "birch": (birch, "cream", "leaf_light", [
         # single straight stem, twigs spread up the top half
         dict(stems=[((0.05, 0, 1), 6.0, (3, 3, 4, 4))], r=0.14, reach=(0.8, 1.4), leaf=(0.55, 0.8), squash=1.4,
              top=[(0.4, 0.8)]),

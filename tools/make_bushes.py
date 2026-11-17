@@ -63,9 +63,9 @@ def bramble(bm, rng, p):
         clump(bm, Vector(offset), radius, p["squash"], rng, 7)
 
 
-# kind -> (builder, wood sRGB, leaves sRGB, [variant params]). Comments say what sets each variant apart.
+# kind -> (builder, wood, leaves (palette names), [variant params]). Comments say what sets each variant apart.
 KINDS = {
-    "hazel": (hazel, (0.45, 0.35, 0.25), (0.34, 0.52, 0.16), [
+    "hazel": (hazel, "bark", "leaf", [
         # tall vase: 5 long stems, open top
         dict(stems=5, spread=0.35, length=(1.7, 2.0), leaf=(0.45, 0.55), squash=1.5, top=[((0, 0, 1.0), 0.6)]),
         # round: 4 shorter stems, full middle
@@ -73,7 +73,7 @@ KINDS = {
         # wide: 6 splayed stems, flat crown
         dict(stems=6, spread=0.8, length=(1.3, 1.6), leaf=(0.45, 0.5), squash=1.1, top=[]),
     ]),
-    "holly": (holly, (0.5, 0.47, 0.4), (0.07, 0.25, 0.1), [
+    "holly": (holly, "bark", "leaf_deep", [
         # cone: 3 + 2 + 1 clumps
         dict(z0=0.35, radius=0.5, tiers=(3, 2, 1), step=0.85, shrink=0.75, squash=1.0),
         # tall column: 2 + 2 + 1 + 1
@@ -81,7 +81,7 @@ KINDS = {
         # low dome: 4 wide + 1
         dict(z0=0.25, radius=0.45, tiers=(4, 1), step=0.7, shrink=0.9, squash=0.8),
     ]),
-    "bramble": (bramble, (0.4, 0.2, 0.22), (0.2, 0.38, 0.13), [
+    "bramble": (bramble, "bark", "leaf", [
         # round mound
         dict(canes=5, reach=(1.0, 1.3), arch=0.45, leafy=4, squash=0.6,
              mounds=[((0, 0, 0.3), 0.7), ((0.5, 0.2, 0.2), 0.5)]),
