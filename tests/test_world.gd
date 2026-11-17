@@ -83,8 +83,12 @@ func _init() -> void:
 			var v: Dictionary = w.village(g)
 			if not v.is_empty():
 				villages += 1
-				for lp: Vector3 in v.lamps:
+				for lamp in v.lamps:
+					var lp: Vector3 = lamp[0]
 					lamps += 1
+					# The arm (+X after the lamp's yaw) reaches towards the square.
+					var arm: Vector3 = Basis(Vector3.UP, lamp[1]) * Vector3.RIGHT
+					assert(Vector2(arm.x, arm.z).dot((v.centre - Vector2(lp.x, lp.z)).normalized()) > 0.99)
 					for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
 						assert(not w._near_line(Vector2(lp.x, lp.z), [w.road(g, g + d)], w.ROAD_HALF + 0.5), "lamp on a road")
 				for hs in v.houses:

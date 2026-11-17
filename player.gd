@@ -79,6 +79,7 @@ func set_view(v: View) -> void:
 		sun.directional_shadow_max_distance = ISO_SHADOWS
 	# Depth fog would grey out everything from 100 m up; the iso view only shows ~60 m around the player.
 	world.seasons.env.fog_enabled = v != View.ISO
+	world.set_lamp_fade(v != View.ISO)
 	view = v
 	camera.current = v == View.FIRST
 	tp_cam.current = v == View.THIRD

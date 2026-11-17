@@ -28,8 +28,11 @@ const ROCK_KINDS := 5  # tools/make_rocks.py; rock_3 is a pebble (no collision)
 const FLOWER_CLUSTERS := 40  # flower beds tried per zone; about half fit their species' habitat
 const VILLAGE_GRID := 400.0  # one candidate village per 400 m square, kept only on flat plains
 const HOUSE_KINDS := 3  # tools/make_houses.py
-const LAMP_HEIGHT := 3.4  # m, top of the pole = bottom of the lantern
+const LAMP_HEIGHT := 3.4  # m, bottom of the lantern
+const LAMP_ARM := 0.55  # m from the pole to the lantern
+const LAMP_LIGHT := Vector3(LAMP_ARM, LAMP_HEIGHT + 0.2, 0)  # lantern centre = light, in the lamp's frame
 const LAMP_COLOR := Color(1.0, 0.75, 0.42)  # warm sodium-ish
+const LAMP_SHADOW_DIST := 35.0  # m from the camera within which a lamp casts shadows
 const LAMP_ON_SUN := 0.05  # lamps light up once the sun is lower than this (dir.y, ~3° above the horizon)
 const ROAD_HALF := 2.0  # road half-width, metres
 const ROAD_LINKS := 2  # each village gets a road to its nearest villages…
@@ -70,11 +73,12 @@ var flowers: Array = []
 var house_meshes: Array[Mesh] = []
 var house_shapes: Array[BoxShape3D] = []  # per kind, the walls' box (plinth excluded)
 var house_centres: Array[Vector3] = []  # per kind, centre of that box in the house's frame
-# Village street lamps: dark pole + lantern (surface 1, lit at night), an OmniLight each in full zones.
-var lamp_mesh := ArrayMesh.new()
+# Village street lamps: dark pole + lantern (lit at night), a shadow-casting OmniLight each in full zones.
+var lamp_meshes: Array[ArrayMesh] = []
 var lamp_glass := StandardMaterial3D.new()
 var lamp_shape := CylinderShape3D.new()
 var lamps_on := false
+var lamp_fade := true  # off in the iso view, whose camera is 100 m away (every lamp would fade out)
 # Memoised village sites / villages / roads (pure functions of the seed), shared by worker threads.
 var _sites := {}
 var _villages := {}
@@ -296,10 +300,11 @@ func _village(g: Vector2i) -> Dictionary:
 	for hs in houses:
 		var front: Vector3 = Basis(Vector3.UP, hs[1]) * Vector3(2.4, 0, 4.6)  # doors face +Z
 		spots.append(Vector2(hs[0].x + front.x, hs[0].z + front.z))
-	var lamps := []
+	var lamps := []  # [world position on the ground, yaw]: the arm (+X) reaches towards the square
 	for p in spots:
 		if not _near_line(p, roads, ROAD_HALF + 1.0) and height(p.x, p.y) > WATER_LEVEL + 0.5:
-			lamps.append(Vector3(p.x, height(p.x, p.y), p.y))
+			var to_square := c - p
+			lamps.append([Vector3(p.x, height(p.x, p.y), p.y), atan2(-to_square.y, to_square.x)])
 	return {"centre": c, "houses": houses, "lamps": lamps}
 
 
@@ -414,10 +419,10 @@ func layout(cell: Vector2i) -> Dictionary:
 				_mark_segment(mask, lp, lp, 0.0, 7.5)
 				if absf(lp.x) < half and absf(lp.y) < half:
 					houses[hs[2]].append(Transform3D(Basis(Vector3.UP, hs[1]), Vector3(lp.x, hs[0].y, lp.y)))
-			for lamp: Vector3 in v.lamps:
-				var ll := lamp - Vector3(origin.x, 0, origin.y)
+			for lamp in v.lamps:
+				var ll: Vector3 = lamp[0] - Vector3(origin.x, 0, origin.y)
 				if absf(ll.x) < half and absf(ll.z) < half:
-					lamps.append(Transform3D(Basis(), ll))
+					lamps.append(Transform3D(Basis(Vector3.UP, lamp[1]), ll))
 	return {"mask": mask, "houses": houses, "lamps": lamps}
 
 
@@ -517,7 +522,7 @@ func missing_cells_near(p: Vector3) -> Array[Vector2i]:
 	return out
 
 
-## Street lamp model: pole and cap (surface 0, dark metal), lantern (surface 1, `lamp_glass`).
+## Street lamp model: lamp_meshes[0] = pole and cap (dark metal), [1] = lantern (`lamp_glass`).
 func _make_lamp() -> void:
 	var metal := StandardMaterial3D.new()
 	metal.albedo_color = Color(0.15, 0.15, 0.16)
@@ -526,30 +531,37 @@ func _make_lamp() -> void:
 	lamp_glass.emission_enabled = true
 	lamp_glass.emission = LAMP_COLOR
 	lamp_glass.emission_energy_multiplier = 0.0  # set_lamps() turns it up at night
+	# Bracket lamp: the lantern hangs from an arm, so the pole isn't under its own light (right below
+	# the light, even a thin pole top throws a metre-wide disc of shadow on the ground).
 	var pole := CylinderMesh.new()
 	pole.top_radius = 0.05
 	pole.bottom_radius = 0.08
-	pole.height = LAMP_HEIGHT
+	pole.height = LAMP_HEIGHT + 0.6
 	pole.radial_segments = 6
 	pole.rings = 1
+	var arm := BoxMesh.new()
+	arm.size = Vector3(LAMP_ARM + 0.1, 0.06, 0.06)
 	var cap := CylinderMesh.new()
 	cap.top_radius = 0.03
-	cap.bottom_radius = 0.28
+	cap.bottom_radius = 0.25
 	cap.height = 0.2
 	cap.radial_segments = 6
 	cap.rings = 1
 	var glass := BoxMesh.new()
 	glass.size = Vector3(0.3, 0.4, 0.3)
-	for part in [[[pole, LAMP_HEIGHT / 2.0], [cap, LAMP_HEIGHT + 0.5]], [[glass, LAMP_HEIGHT + 0.2]]]:
+	var top := LAMP_HEIGHT + 0.57
+	# Two meshes: the post casts shadows, the lantern can't (its own light sits inside it).
+	for part in [[[pole, Vector3(0, (LAMP_HEIGHT + 0.6) / 2.0, 0)], [arm, Vector3(LAMP_ARM / 2.0, top, 0)],
+			[cap, Vector3(LAMP_ARM, LAMP_HEIGHT + 0.5, 0)]], [[glass, LAMP_LIGHT]]]:
 		var st := SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
 		for piece in part:
-			st.append_from(piece[0], 0, Transform3D(Basis(), Vector3.UP * piece[1]))
-		st.commit(lamp_mesh)
-	lamp_mesh.surface_set_material(0, metal)
-	lamp_mesh.surface_set_material(1, lamp_glass)
+			st.append_from(piece[0], 0, Transform3D(Basis(), piece[1]))
+		lamp_meshes.append(st.commit())
+	lamp_meshes[0].surface_set_material(0, metal)
+	lamp_meshes[1].surface_set_material(0, lamp_glass)
 	lamp_shape.radius = 0.1
-	lamp_shape.height = LAMP_HEIGHT
+	lamp_shape.height = LAMP_HEIGHT + 0.6
 
 
 ## Lanterns glow and their lights shine from dusk to dawn.
@@ -558,6 +570,12 @@ func set_lamps(on: bool) -> void:
 	lamp_glass.emission_energy_multiplier = 3.0 if on else 0.0
 	for light in get_tree().get_nodes_in_group("lamp_light"):
 		light.visible = on
+
+
+func set_lamp_fade(on: bool) -> void:
+	lamp_fade = on
+	for light in get_tree().get_nodes_in_group("lamp_light"):
+		light.distance_fade_enabled = on
 
 
 func _process(_delta: float) -> void:
@@ -774,20 +792,30 @@ func _attach_zone(d: Dictionary) -> void:
 
 	var lamps: Array[Transform3D] = d.lamps
 	if not lamps.is_empty():
-		zone.add_child(_multimesh(lamp_mesh, lamps))
+		zone.add_child(_multimesh(lamp_meshes[0], lamps))
+		var lanterns := _multimesh(lamp_meshes[1], lamps)
+		lanterns.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		zone.add_child(lanterns)
 		for t in lamps:
 			var light := OmniLight3D.new()
-			light.position = t.origin + Vector3.UP * (LAMP_HEIGHT + 0.2)
+			light.position = t * LAMP_LIGHT
 			light.light_color = LAMP_COLOR
 			light.light_energy = 1.6
 			light.omni_range = 11.0
 			light.omni_attenuation = 1.4
+			# Shadows on houses, trees, posts and the player; only near the camera (cube maps cost
+			# six renders each), and the whole light fades out past where its pool is a speck.
+			light.shadow_enabled = true
+			light.distance_fade_enabled = lamp_fade
+			light.distance_fade_begin = 80.0
+			light.distance_fade_length = 20.0
+			light.distance_fade_shadow = LAMP_SHADOW_DIST
 			light.visible = lamps_on
 			light.add_to_group("lamp_light")
 			zone.add_child(light)
 			var lcs := CollisionShape3D.new()
 			lcs.shape = lamp_shape
-			lcs.position = t.origin + Vector3.UP * (LAMP_HEIGHT / 2.0)
+			lcs.position = t.origin + Vector3.UP * ((LAMP_HEIGHT + 0.6) / 2.0)
 			body.add_child(lcs)  # lamps only exist in full zones, which have a body
 
 	var all_flowers: Array = d.flowers

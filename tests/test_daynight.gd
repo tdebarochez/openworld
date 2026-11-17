@@ -179,4 +179,11 @@ func _check():
 		assert(w.lamps_on == case[1], "lamps at %s h" % case[0])
 		assert((w.lamp_glass.emission_energy_multiplier > 0.0) == case[1])
 		assert(w.get_tree().get_nodes_in_group("lamp_light").all(func(l): return l.visible == case[1]))
+	# Lamp lights cast shadows; their distance fade is off in the iso view (camera 100 m away).
+	var lights: Array = w.get_tree().get_nodes_in_group("lamp_light")
+	assert(not lights.is_empty() and lights.all(func(l): return l.shadow_enabled and l.distance_fade_enabled))
+	w.player.set_view(w.player.View.ISO)
+	assert(lights.all(func(l): return not l.distance_fade_enabled))
+	w.player.set_view(w.player.View.FIRST)
+	assert(lights.all(func(l): return l.distance_fade_enabled))
 	return true
