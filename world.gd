@@ -109,6 +109,7 @@ func _ready() -> void:
 	daynight.world = self
 	add_child(daynight)  # after seasons.setup(): applies its light for the hour
 	add_child(preload("res://birds.gd").new())  # finds the world as its parent
+	add_child(preload("res://clouds.gd").new())  # same
 	var layer := CanvasLayer.new()
 	var map := preload("res://map.gd").new()
 	map.world = self
