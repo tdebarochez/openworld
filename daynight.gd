@@ -81,10 +81,10 @@ func _process(delta: float) -> void:
 	set_time(time + delta * (24.0 / DAY_SECONDS + SCRUB_SPEED * clampi(scrub, -1, 1)))
 
 
+## Applied every frame: stepping the light once per game minute made every shadow jump 0.25°.
 func set_time(h: float) -> void:
 	time = fposmod(h, 24.0)
-	if floori(time * 60.0) != _applied:  # ~once per real second when not scrubbing
-		apply()
+	apply()
 
 
 func clock() -> String:
@@ -102,7 +102,6 @@ static func sun_dir(h: float, decl := 0.0) -> Vector3:
 
 
 func apply() -> void:
-	_applied = floori(time * 60.0)
 	var s: Dictionary = world.seasons.light
 	var sun: DirectionalLight3D = world.seasons.sun
 	var sky: ProceduralSkyMaterial = world.seasons.sky
@@ -132,7 +131,9 @@ func apply() -> void:
 	env.fog_light_color = haze
 	env.fog_depth_begin = s.fog
 	env.ambient_light_color = s.ambient * NIGHT_AMBIENT.lerp(Color.WHITE, day)
-	world._update_hud()
+	if floori(time * 60.0) != _applied:  # the clock only shows minutes: don't relayout the HUD every frame
+		_applied = floori(time * 60.0)
+		world._update_hud()
 
 
 ## Star field and Milky Way for the sky cover (equirectangular, row 0 = zenith), faded in at night.
