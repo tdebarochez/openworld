@@ -27,7 +27,8 @@ const ROCK_ATTEMPTS := 40  # ~6 rocks per zone on plains, ~30 in hills
 const ROCK_KINDS := 5  # tools/make_rocks.py; rock_3 is a pebble (no collision)
 const FLOWER_CLUSTERS := 40  # flower beds tried per zone; about half fit their species' habitat
 const VILLAGE_GRID := 400.0  # one candidate village per 400 m square, kept only on flat plains
-const HOUSE_KINDS := 3  # tools/make_houses.py
+const HOUSE_KINDS := 6  # tools/make_houses.py: 0-2 medieval, 3-5 chalets
+const HOUSE_VARIANTS := 3  # kinds per style
 const LAMP_HEIGHT := 3.4  # m, bottom of the lantern
 const LAMP_ARM := 0.55  # m from the pole to the lantern
 const LAMP_LIGHT := Vector3(LAMP_ARM, LAMP_HEIGHT + 0.2, 0)  # lantern centre = light, in the lamp's frame
@@ -71,8 +72,10 @@ var rock_shapes: Array[Shape3D] = []  # convex hull per rock kind, null for the 
 # plus "mesh". Surface 0 = foliage, surfaces ≥ 1 = blossom (seasons.gd hides them out of season).
 var flowers: Array = []
 var house_meshes: Array[Mesh] = []
-var house_shapes: Array[BoxShape3D] = []  # per kind, the walls' box (plinth excluded)
+var house_shapes: Array[BoxShape3D] = []  # per kind, the walls' box (eaves and balconies excluded)
 var house_centres: Array[Vector3] = []  # per kind, centre of that box in the house's frame
+var house_low: Array[Rect2] = []  # per kind, x/z extent of all lower than a lantern (balconies, porch, low eaves)
+var house_radius: Array[float] = []  # per kind, from the origin to the farthest roof corner (x/z)
 # Village street lamps: dark pole + lantern (lit at night), a shadow-casting OmniLight each in full zones.
 var lamp_meshes: Array[ArrayMesh] = []
 var lamp_glass := StandardMaterial3D.new()
@@ -112,12 +115,24 @@ func _init() -> void:
 	for k in HOUSE_KINDS:
 		var m := _load_mesh("res://assets/houses/house_%d.glb" % k)
 		house_meshes.append(m)
-		var box := m.get_aabb()
-		box = box.intersection(AABB(Vector3(box.position.x, 0, box.position.z), Vector3(box.size.x, box.end.y, box.size.z)))
+		# Collision box from the plinth top and the foot of the walls (wall and stone surfaces 0.25-1.2 m
+		# up, so the eaves, jetties and balconies don't widen it), from the ground to the roof top.
+		var box := AABB()
+		var low := Rect2()
+		for s in m.get_surface_count():
+			for v: Vector3 in m.surface_get_arrays(s)[Mesh.ARRAY_VERTEX]:
+				if v.y < LAMP_HEIGHT + 0.8:
+					low = low.expand(Vector2(v.x, v.z))
+				if (s == 0 or s == 4) and v.y > 0.25 and v.y < 1.2:
+					box = box.expand(v)
+		box.end.y = m.get_aabb().end.y
 		var shape := BoxShape3D.new()
 		shape.size = box.size
 		house_shapes.append(shape)
 		house_centres.append(box.get_center())
+		house_low.append(low)
+		var full := m.get_aabb()
+		house_radius.append(Vector2(maxf(-full.position.x, full.end.x), maxf(-full.position.z, full.end.z)).length())
 	_make_lamp()
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
@@ -280,29 +295,32 @@ func _village(g: Vector2i) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = site.seed
 	var houses := []  # [world position, yaw, kind]; doors (+Z) face the village square
+	# One style per village, chalets likelier on less flat sites, and the odd house of the other style.
+	var chalets := rng.randf() < 0.4 + 3.0 * hilliness(c.x, c.y)
 	var count := rng.randi_range(4, 9)
 	for i in count:
 		var a := TAU * i / count + rng.randf_range(-0.25, 0.25)
-		var r := rng.randf_range(13.0, 24.0)
-		var kind := rng.randi() % HOUSE_KINDS
+		var kind := (int(chalets) ^ int(rng.randf() < 0.12)) * HOUSE_VARIANTS + rng.randi() % HOUSE_VARIANTS
+		var rad := house_radius[kind]
+		var r := rng.randf_range(9.0, 17.0) + rad  # roof clear of the square and its lamps
 		var p := c + Vector2(cos(a), sin(a)) * r
 		var ph := height(p.x, p.y)
-		if ph < WATER_LEVEL + 1.0 or _normal(p.x, p.y).y < 0.9 or _near_line(p, roads, 8.0) \
-				or houses.any(func(o): return Vector2(o[0].x, o[0].z).distance_to(p) < 11.0):
+		if ph < WATER_LEVEL + 1.0 or _normal(p.x, p.y).y < 0.9 or _near_line(p, roads, rad + ROAD_HALF) \
+				or houses.any(func(o): return Vector2(o[0].x, o[0].z).distance_to(p) < rad + house_radius[o[2]]):
 			continue
 		var to_square := c - p
 		houses.append([Vector3(p.x, ph - 0.1, p.y), atan2(to_square.x, to_square.y), kind])
-	# Street lamps: five round the square (inside its clearing) and one beside each front door,
-	# none on a road.
+	# Street lamps: five round the square (inside its clearing) and one beside each front door, in
+	# front of the balcony or porch; none on a road or in a house.
 	var spots: Array[Vector2] = []
 	for i in 5:
 		spots.append(c + Vector2.from_angle(TAU * i / 5.0 + 0.3) * 8.3)
 	for hs in houses:
-		var front: Vector3 = Basis(Vector3.UP, hs[1]) * Vector3(2.4, 0, 4.6)  # doors face +Z
+		var front: Vector3 = Basis(Vector3.UP, hs[1]) * Vector3(2.4, 0, house_low[hs[2]].end.y + 0.8)  # doors face +Z
 		spots.append(Vector2(hs[0].x + front.x, hs[0].z + front.z))
 	var lamps := []  # [world position on the ground, yaw]: the arm (+X) reaches towards the square
 	for p in spots:
-		if not _near_line(p, roads, ROAD_HALF + 1.0) and height(p.x, p.y) > WATER_LEVEL + 0.5:
+		if not _near_line(p, roads, ROAD_HALF + 1.0) and height(p.x, p.y) > WATER_LEVEL + 0.5 and not in_house(p, houses):
 			var to_square := c - p
 			lamps.append([Vector3(p.x, height(p.x, p.y), p.y), atan2(-to_square.y, to_square.x)])
 	return {"centre": c, "houses": houses, "lamps": lamps}
@@ -322,6 +340,16 @@ func _memo(table: Dictionary, key: Variant, fn: Callable) -> Variant:
 	table[key] = v
 	_memo_lock.unlock()
 	return v
+
+
+## True when world x/z point `p` is within `margin` of one of `houses` ([position, yaw, kind]) or of
+## anything of it lower than a lantern (house_low: balconies, porch, low eaves).
+func in_house(p: Vector2, houses: Array, margin := 0.5) -> bool:
+	for hs in houses:
+		var l: Vector3 = Basis(Vector3.UP, -hs[1]) * Vector3(p.x - hs[0].x, 0, p.y - hs[0].z)
+		if house_low[hs[2]].grow(margin).has_point(Vector2(l.x, l.z)):
+			return true
+	return false
 
 
 static func _near_line(p: Vector2, lines: Array, r: float) -> bool:
@@ -416,7 +444,7 @@ func layout(cell: Vector2i) -> Dictionary:
 			_mark_segment(mask, v.centre - origin, v.centre - origin, 7.0, 9.0)  # the square
 			for hs in v.houses:
 				var lp := Vector2(hs[0].x, hs[0].z) - origin
-				_mark_segment(mask, lp, lp, 0.0, 7.5)
+				_mark_segment(mask, lp, lp, 0.0, house_radius[hs[2]] + 1.0)
 				if absf(lp.x) < half and absf(lp.y) < half:
 					houses[hs[2]].append(Transform3D(Basis(Vector3.UP, hs[1]), Vector3(lp.x, hs[0].y, lp.y)))
 			for lamp in v.lamps:

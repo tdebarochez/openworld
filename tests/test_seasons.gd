@@ -52,6 +52,9 @@ func _check():
 	for t in trees:
 		kinds[t.kind] = true
 	assert(kinds.size() == 3, "expected all species around the spawn")
+	assert(w.house_meshes.size() == 6)
+	for m: Mesh in w.house_meshes:  # tools/make_houses.py: slot 1 is the roof on every house
+		assert(m.get_surface_count() == 5 and m.surface_get_material(1).resource_name.ends_with("_roof"), "roof not in slot 1")
 	var sun_energy: float = w.seasons.sun.light_energy
 	var water: Color = w.water_mat.albedo_color
 
@@ -82,6 +85,9 @@ func _check():
 				assert(oak_mat.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR)
 				assert(w.water_mat.albedo_color == s.ICE)
 				assert(w.house_meshes.all(func(m): return m.surface_get_material(1) is ShaderMaterial), "snow on the roofs")
+				for m: Mesh in w.house_meshes:  # walls, wood (balconies), glass and stone stay bare
+					for i in [0, 2, 3, 4]:
+						assert(m.surface_get_material(i) is StandardMaterial3D, "snow off the roof")
 				assert(s.snow.emitting)
 				assert(w.seasons.sun.light_energy < sun_energy)
 			S.SUMMER:
