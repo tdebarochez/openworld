@@ -1,19 +1,41 @@
 extends SceneTree
 # Run: godot --headless --path . -s tests/test_audio.gd
-# Footstep cadence, landing detection and the music loop flag.
+# Footstep cadence, landing detection, one looping music per season and the crossfade on a switch.
 
 var a
+var frames := 0
 
 
 func _initialize() -> void:
 	a = load("res://audio.gd").new()
+	a.seasons = load("res://seasons.gd").new()  # stands in for the world's
 	root.add_child(a)
 
 
-func _process(_delta: float) -> bool:  # first frame, after a's _ready
-	var wav: AudioStreamWAV = a.music.stream
-	assert(wav.loop_mode == AudioStreamWAV.LOOP_FORWARD, "music does not loop")
-	print("music %.1f s, loop %d..%d" % [wav.get_length(), wav.loop_begin, wav.loop_end])
+func _process(_delta: float) -> bool:
+	frames += 1
+	if frames == 1:  # after a's _ready
+		_check_sounds()
+		a.seasons.season = a.seasons.Season.WINTER  # as seasons.set_season() would
+	elif frames == 3:  # a's _process has seen the switch
+		assert(a.music.stream == a.MUSIC[a.seasons.Season.WINTER], "winter loop not started")
+		assert(a.fading.stream == a.MUSIC[a.seasons.Season.SUMMER] and a.fading.playing, "summer not fading out")
+		a.tween.custom_step(a.FADE + 0.1)  # skip to the end of the crossfade
+		assert(a.music.playing and absf(a.music.volume_db - a.MUSIC_DB) < 0.01, "winter not at full volume")
+		assert(not a.fading.playing, "summer still playing")
+		a.seasons.free()
+		print("AUDIO OK")
+		quit()
+	return false
+
+
+func _check_sounds() -> void:
+	for s: int in a.seasons.Season.values():  # each season has its own looping stream
+		var wav: AudioStreamWAV = a.MUSIC[s]
+		assert(wav.loop_mode == AudioStreamWAV.LOOP_FORWARD, "music does not loop")
+		assert(a.MUSIC.count(wav) == 1, "two seasons share a loop")
+		print("music %d: %.1f s, loop %d..%d" % [s, wav.get_length(), wav.loop_begin, wav.loop_end])
+	assert(a.music.stream == a.MUSIC[a.seasons.Season.SUMMER] and a.music.playing)
 
 	var walk := _count(8.0, true, false)
 	var sprint := _count(20.0, true, false)
@@ -31,9 +53,6 @@ func _process(_delta: float) -> bool:  # first frame, after a's _ready
 	for i in 40:
 		a.update(1 / 60.0, false, false, 0.0)
 	assert(a.update(1 / 60.0, true, false, 0.0) == &"land")
-	print("AUDIO OK")
-	quit()
-	return true
 
 
 func _count(speed: float, grounded: bool, swimming: bool) -> int:
