@@ -77,6 +77,9 @@ func _init() -> void:
 	var villages := 0
 	var roads := 0
 	var lamps := 0
+	var kinds := {}
+	var houses := 0
+	var odd := 0  # houses not of their village's main style
 	for gx in range(-5, 5):
 		for gz in range(-5, 5):
 			var g := Vector2i(gx, gz)
@@ -94,11 +97,24 @@ func _init() -> void:
 					assert(Vector2(arm.x, arm.z).dot((v.centre - Vector2(lp.x, lp.z)).normalized()) > 0.99)
 					for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
 						assert(not w._near_line(Vector2(lp.x, lp.z), [w.road(g, g + d)], w.ROAD_HALF + 0.5), "lamp on a road")
-				for hs in v.houses:
+					# Outside every house's walls, balcony and porch (everything lower than the lantern).
+					assert(not w.in_house(Vector2(lp.x, lp.z), v.houses, 0.3), "lamp in a house")
+				var styles := [0, 0]
+				for i in v.houses.size():
+					var hs: Array = v.houses[i]
 					var p := Vector2(hs[0].x, hs[0].z)
+					var rad: float = w.house_radius[hs[2]]
+					kinds[hs[2]] = true
+					styles[hs[2] / w.HOUSE_VARIANTS] += 1
 					assert(hs[0].y > w.WATER_LEVEL)
 					for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
-						assert(not w._near_line(p, [w.road(g, g + d)], 8.0), "house on a road")
+						assert(not w._near_line(p, [w.road(g, g + d)], rad + w.ROAD_HALF), "house on a road")
+					assert(p.distance_to(v.centre) > rad + 8.3, "house over the square's lamps")
+					for j in i:  # roofs never touch, whatever the yaws
+						var o: Array = v.houses[j]
+						assert(p.distance_to(Vector2(o[0].x, o[0].z)) >= rad + w.house_radius[o[2]], "houses overlap")
+				odd += styles.min()
+				houses += v.houses.size()
 			for d in [Vector2i(1, 0), Vector2i(0, 1)]:
 				var r: PackedVector2Array = w.road(g, g + d)
 				assert(r == w.road(g + d, g))
@@ -106,8 +122,15 @@ func _init() -> void:
 					roads += 1
 					for p in r:
 						assert(w.height(p.x, p.y) >= w.WATER_LEVEL + 0.5)
-	print("villages %d, roads %d, street lamps %d over 4 x 4 km" % [villages, roads, lamps])
+	print("villages %d, roads %d, street lamps %d, houses %d (%d off their village's style), kinds %s over 4 x 4 km" % [villages, roads, lamps, houses, odd, kinds.keys()])
 	assert(villages > 0 and roads > 0 and lamps > villages * 5)
+	assert(kinds.size() == w.HOUSE_KINDS, "every house kind is used")
+	assert(odd < houses * 0.2, "villages should keep mostly one style")
+	for k in w.HOUSE_KINDS:  # the collision box sits within the house, the lamps' keep-out area covers it
+		var hb := AABB(w.house_centres[k] - w.house_shapes[k].size / 2.0, w.house_shapes[k].size)
+		assert(w.house_low[k].encloses(Rect2(hb.position.x, hb.position.z, hb.size.x, hb.size.z)))
+		assert(hb.size.x > 4.0 and hb.size.z > 4.0 and hb.position.y == 0.0 and w.house_radius[k] < 9.0)
+		print("house %d: walls %s, low %s, radius %.1f" % [k, hb, w.house_low[k], w.house_radius[k]])
 	for gx in range(-3, 3):  # a zone with a house: no tree within the house's clearing
 		var v: Dictionary = w.village(Vector2i(gx, 0))
 		if v.is_empty() or v.houses.is_empty():
@@ -118,7 +141,7 @@ func _init() -> void:
 		var local: Vector2 = Vector2(hp.x, hp.z) - Vector2(cell) * w.ZONE_SIZE
 		for models in w.tree_transforms(cell, lay.mask):
 			for t in models:
-				assert(Vector2(t.origin.x, t.origin.z).distance_to(local) > 7.0, "tree inside a house")
+				assert(Vector2(t.origin.x, t.origin.z).distance_to(local) > w.house_radius[v.houses[0][2]], "tree inside a house")
 		assert(lay.houses.any(func(l): return not l.is_empty()))
 		assert(not lay.lamps.is_empty(), "no street lamp in a village zone")
 		break
