@@ -78,6 +78,7 @@ var base := {}  # summer light values
 const SEASON_KEYS := ["summer", "autumn", "winter", "spring"]  # as in assets/flowers/flowers.json
 var flower_mats := []  # per flower kind: its original material per surface
 var hidden_mat := StandardMaterial3D.new()  # alpha-scissored away, shadows included
+var light := {}  # this season's noon light (keys of base); daynight.gd applies it for the hour
 var snow: CPUParticles3D  # made in setup(), carried by the player
 var leaves: CPUParticles3D  # autumn: dead leaves drifting down
 var petals: CPUParticles3D  # spring: blossom petals floating
@@ -104,6 +105,7 @@ func setup() -> void:
 		"haze": sky.sky_horizon_color, "fog": env.fog_depth_begin, "ambient": env.ambient_light_color,
 		"water": world.water_mat.albedo_color, "water_rough": world.water_mat.roughness,
 		"shadow": sun.shadow_opacity}
+	light = base
 	var shader := Shader.new()
 	shader.code = SNOWY_LEAVES_SHADER
 	for model in world.species.size():
@@ -151,16 +153,10 @@ func set_season(s: Season) -> void:
 			if mmi.has_meta("trees"):
 				_recolour(mmi.multimesh, mmi.get_meta("trees"), zone.position)
 	var l: Dictionary = LIGHT[s]
-	sun.light_color = base.sun * l.sun
-	sun.light_energy = base.energy * l.energy
-	var haze: Color = base.haze.lerp(l.haze, l.mix)
-	sky.sky_horizon_color = haze
-	sky.ground_horizon_color = haze
-	sky.ground_bottom_color = haze
-	sky.sky_top_color = base.top.lerp(l.haze, l.mix * 0.5)
-	env.fog_light_color = haze
-	env.fog_depth_begin = base.fog * l.fog
-	env.ambient_light_color = base.ambient * l.sun  # only used by the Compatibility renderer
+	light = {"sun": base.sun * l.sun, "energy": base.energy * l.energy, "haze": base.haze.lerp(l.haze, l.mix),
+		"top": base.top.lerp(l.haze, l.mix * 0.5), "fog": base.fog * l.fog,
+		"ambient": base.ambient * l.sun}  # ambient: only used by the Compatibility renderer
+	world.daynight.apply()  # final sun/sky/fog = this season's light × time of day
 	sun.shadow_opacity = base.shadow * l.shadow
 	_set_flowers()
 	for pair in [[snow, Season.WINTER], [leaves, Season.AUTUMN], [petals, Season.SPRING]]:
