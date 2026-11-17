@@ -24,6 +24,14 @@ const DUSK_HAZE := Color(1.45, 0.8, 0.5)
 const NIGHT_HAZE := Color(0.1, 0.14, 0.3)
 const NIGHT_TOP := Color(0.04, 0.07, 0.2)
 const NIGHT_AMBIENT := Color(0.3, 0.4, 0.75)  # Compatibility renderer only (flat ambient)
+# Milky Way: pole of its great circle (22° up towards SE, so the band arches 68° high from SW to NE),
+# core longitude along it from the SW horizon (24° up in the WSW), and glow colours/strength (sRGB).
+const GALAXY_POLE := Vector3(0.656, 0.375, 0.656)
+const CORE_L := 0.45
+const MW_WARM := Color(1.0, 0.85, 0.66)
+const MW_COOL := Color(0.72, 0.82, 1.0)
+const MW_STRENGTH := 0.22
+const MW_GRID := 384  # glow computed at this width, then upscaled (build time ~ MW_GRID²)
 
 var world  # world.gd
 var time := START
@@ -127,12 +135,83 @@ func apply() -> void:
 	world._update_hud()
 
 
-## Star field for the sky cover (equirectangular), faded in at night.
+## Star field and Milky Way for the sky cover (equirectangular, row 0 = zenith), faded in at night.
 func _stars() -> ImageTexture:
-	var img := Image.create(2048, 1024, false, Image.FORMAT_L8)
+	var glow := _milky_way()
+	glow.resize(2048, 512, Image.INTERPOLATE_BILINEAR)  # the glow is soft: a coarse grid is enough
+	var img := Image.create(2048, 1024, false, Image.FORMAT_RGB8)
+	img.blit_rect(glow, Rect2i(0, 0, 2048, 512), Vector2i.ZERO)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 7
-	for i in 2500:  # uniform over the upper hemisphere (row 0 = zenith)
+	for i in 2500:  # uniform over the upper hemisphere
 		var row := int(acos(rng.randf()) / PI * 1024.0)
 		img.set_pixel(rng.randi() % 2048, row, Color.WHITE * rng.randf_range(0.3, 1.0))
+	var e := _galaxy_axes()
+	for i in 4000:  # faint stars crowding along the band, most around the core
+		var l := rng.randf() * TAU
+		var core := _core(l)
+		var b := rng.randfn(0.0, 0.05 + 0.07 * core)
+		var d: Vector3 = (e[0] * cos(l) + e[1] * sin(l)) * cos(b) + e[2] * sin(b)
+		if d.y <= 0.0 or rng.randf() > 0.35 + 0.65 * core:
+			continue
+		var px := Vector2i(int(fposmod(atan2(d.x, -d.z) / TAU, 1.0) * 2048.0) % 2048, int(acos(d.y) / PI * 1024.0))
+		img.set_pixelv(px, img.get_pixelv(px) + Color.WHITE * rng.randf_range(0.08, 0.3))
 	return ImageTexture.create_from_image(img)
+
+
+## [e1, e2, pole] of the Milky Way's great circle: e1 on the horizon (south-west), e2 its top.
+func _galaxy_axes() -> Array:
+	var n := GALAXY_POLE.normalized()
+	var e1 := n.cross(Vector3.UP).normalized()
+	return [e1, e1.cross(n), n]
+
+
+## 1 at the galactic core (longitude CORE_L along the band), 0 far from it.
+func _core(l: float) -> float:
+	return exp(-pow(angle_difference(l, CORE_L) / 0.6, 2.0))
+
+
+## Milky Way glow on a coarse MW_GRID x MW_GRID/4 grid, the sky half of an equirectangular map (~1° per
+## texel): a soft band around the great circle, wider, brighter and warmer at the core, split by dust
+## lanes, dimmed near the horizon. Noise is sampled at the 3D direction: no seam, no zenith stretching.
+func _milky_way() -> Image:
+	var gw := MW_GRID
+	var gh := MW_GRID / 4
+	var img := Image.create(gw, gh, false, Image.FORMAT_RGB8)
+	var e := _galaxy_axes()
+	var e1: Vector3 = e[0]
+	var e2: Vector3 = e[1]
+	var n: Vector3 = e[2]
+	var clumps := FastNoiseLite.new()
+	clumps.seed = 3
+	clumps.frequency = 2.0  # per unit of direction: ~30° clouds
+	clumps.fractal_octaves = 3
+	var dust := FastNoiseLite.new()
+	dust.seed = 5
+	dust.frequency = 6.0
+	dust.fractal_octaves = 4
+	var sp := PackedFloat32Array()
+	var cp := PackedFloat32Array()
+	for x in gw:
+		sp.append(sin((x + 0.5) / gw * TAU))
+		cp.append(cos((x + 0.5) / gw * TAU))
+	for y in gh:
+		var st := sin((y + 0.5) / (2 * gh) * PI)
+		var ct := cos((y + 0.5) / (2 * gh) * PI)
+		var fade := smoothstep(0.0, 0.3, ct)  # extinction near the horizon
+		for x in gw:
+			var d := Vector3(st * sp[x], ct, -st * cp[x])
+			var b := d.dot(n)  # sine of the galactic latitude
+			if absf(b) > 0.6:
+				continue
+			var core := _core(atan2(d.dot(e2), d.dot(e1)))
+			var c := clumps.get_noise_3dv(d)
+			var w := (0.1 + 0.1 * core) * (1.0 + 0.35 * c)
+			var r := b / w
+			var k := dust.get_noise_3dv(d)
+			var rift := (b - 0.04 * c) / (0.3 * w)
+			var glow := (exp(-r * r) * (0.6 + 0.4 * core) * (0.8 + 0.4 * c) + 0.15 * exp(-r * r / 3.24)) \
+				* (1.0 - 0.7 * exp(-rift * rift) * smoothstep(-0.3, 0.2, k)) \
+				* (1.0 - 0.4 * smoothstep(0.0, 0.5, k)) * fade  # rift along the plane, patchy dust
+			img.set_pixel(x, y, MW_COOL.lerp(MW_WARM, clampf(core + 0.3 * c, 0.0, 1.0)) * (glow * MW_STRENGTH))
+	return img
