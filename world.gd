@@ -689,7 +689,7 @@ func _ground_color(h: float, up: float) -> Color:
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · M carte · 1-4 saison · +/- heure · Échap souris\nZones : %d · Saison : %s · Heure : %s" % [zones.size(), seasons.NAMES[seasons.season], daynight.clock()]
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · V vue iso (molette zoom) · M carte · 1-4 saison · +/- heure · Échap souris\nZones : %d · Saison : %s · Heure : %s" % [zones.size(), seasons.NAMES[seasons.season], daynight.clock()]
 
 
 func _setup_environment() -> void:
