@@ -79,6 +79,23 @@ func _check():
 	d._unhandled_input(_key(KEY_MINUS, 0, false, KEY_6))
 	assert(is_equal_approx(d.time, 24.0 + 0.1 - d.TAP - 1.0 + 0.5 * 24.0 / d.DAY_SECONDS))
 
+	# Sun, moon and sky disc move every frame (not once per game minute, which made shadows jump 0.25°):
+	# at 60 fps ~0.005° per frame at normal speed, ~0.5° at most while scrubbing.
+	for case in [[0, 1e-4, 0.01], [1, 0.1, 0.51]]:  # [scrub, min step °, max step °]
+		d.held = {KEY_EQUAL: 1} if case[0] else {}
+		for start in [9.0, 18.5, 0.5]:  # sun, low sun, moon
+			d.set_time(start)
+			var prev := sun.global_basis.z
+			for i in 30:
+				d._process(1.0 / 60.0)
+				var step := rad_to_deg(prev.angle_to(sun.global_basis.z))
+				assert(step > case[1] and step < case[2], "step %.4f° at %.3f h" % [step, d.time])
+				assert(d.disc.global_basis.is_equal_approx(sun.global_basis))
+				prev = sun.global_basis.z
+	d.held = {}
+	d.set_time(10.5)
+	assert(w.hud.text.contains("Heure : 10:30"))
+
 	# Sun high at noon, rising east, setting west, below the horizon at night (light = moon above).
 	assert(d.sun_dir(d.NOON).y > 0.65)  # equinox: 44°
 	assert(d.sun_dir(0.0).y < -0.5)
