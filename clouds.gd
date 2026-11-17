@@ -76,6 +76,10 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	global_position = world.player.camera.global_position
+	var r: float = world.player.camera.far * 0.9  # the view distance (P) moves the far plane
+	if mesh.radius != r:
+		mesh.radius = r
+		mesh.height = r * 2.0
 	drift = (drift + WIND * delta / TILE).posmod(1.0)
 	var target: float = COVER[world.seasons.season]
 	cover = target if cover < 0.0 else lerpf(cover, target, minf(delta * 0.3, 1.0))

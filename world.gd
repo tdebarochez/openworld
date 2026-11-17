@@ -4,7 +4,9 @@ extends Node3D
 
 const ZONE_SIZE := 128  # metres per side; 1 m grid so HeightMapShape3D needs no scaling
 const WATER_LEVEL := 0.0
-const VIEW_DIST := 200.0  # zones closer than this get generated; fog is fully opaque here
+const VIEW_DIST := 200.0  # default view distance: zones closer than this get generated; fog is fully opaque here
+const VIEW_DISTS := [200.0, 300.0, 400.0, 500.0]  # P cycles them
+const DENSITIES := [0.5, 1.0, 1.5, 2.0, 3.0]  # O cycles them: multiplier of tree/rock/flower attempts
 const TREE_ATTEMPTS := 400  # random spots tried per zone; most are rejected (water, slope, clearing)
 const TREE_VARIANTS := 3  # models per species (tools/make_trees.py)
 const ROCK_ATTEMPTS := 40  # ~6 rocks per zone on plains, ~30 in hills
@@ -27,6 +29,10 @@ const MAX_JOBS := 4  # zones built in parallel on worker threads
 const MAP_PX := 32  # map pixels per zone side (4 m per pixel)
 enum TreeKind { CONIFER, OAK, BIRCH }
 
+var view_dist := VIEW_DIST
+# Placement attempts are drawn in a fixed order, so a higher density keeps every existing object and adds more.
+var density := 1.0
+var stale := {}  # cells whose loaded zone was built at another density; rebuilt nearest first
 var zones := {}  # Vector2i -> Node3D
 var zone_trees := {}  # Vector2i -> the zone's `trees` data (zone-local, per model); birds.gd perches on them
 var map_tiles := {}  # Vector2i -> Image, top-down view of each generated zone
@@ -144,7 +150,7 @@ func tree_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 	var out := []
 	for k in TreeKind.size() * TREE_VARIANTS:
 		out.append([] as Array[Transform3D])
-	for i in TREE_ATTEMPTS:
+	for i in roundi(TREE_ATTEMPTS * density):
 		# Draw every value up front so the sequence never depends on which spots get rejected.
 		var lx := rng.randf_range(-half, half)
 		var lz := rng.randf_range(-half, half)
@@ -177,7 +183,7 @@ func flower_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 	var out := []
 	for k in flowers.size():
 		out.append([] as Array[Transform3D])
-	for c in FLOWER_CLUSTERS:
+	for c in roundi(FLOWER_CLUSTERS * density):
 		var cx := rng.randf_range(-half, half)
 		var cz := rng.randf_range(-half, half)
 		var kind := rng.randi() % flowers.size()
@@ -403,7 +409,7 @@ func rock_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 	var out := []
 	for k in ROCK_KINDS:
 		out.append([] as Array[Transform3D])
-	for i in ROCK_ATTEMPTS:
+	for i in roundi(ROCK_ATTEMPTS * density):
 		var lx := rng.randf_range(-half, half)
 		var lz := rng.randf_range(-half, half)
 		var keep := rng.randf()
@@ -430,15 +436,15 @@ func dist_to_cell(p: Vector3, cell: Vector2i) -> float:
 	return d.max(Vector2.ZERO).length()
 
 
-## Not-yet-generated cells within VIEW_DIST of `p`, nearest first.
+## Not-yet-generated (or stale) cells within view_dist of `p`, nearest first.
 func missing_cells_near(p: Vector3) -> Array[Vector2i]:
 	var c := cell_of(p)
-	var r := ceili(VIEW_DIST / ZONE_SIZE) + 1
+	var r := ceili(view_dist / ZONE_SIZE) + 1
 	var out: Array[Vector2i] = []
 	for dx in range(-r, r + 1):
 		for dz in range(-r, r + 1):
 			var cell := c + Vector2i(dx, dz)
-			if not zones.has(cell) and not jobs.has(cell) and dist_to_cell(p, cell) <= VIEW_DIST:
+			if (not zones.has(cell) or stale.has(cell)) and not jobs.has(cell) and dist_to_cell(p, cell) <= view_dist:
 				out.append(cell)
 	out.sort_custom(func(a, b): return dist_to_cell(p, a) < dist_to_cell(p, b))
 	return out
@@ -473,12 +479,13 @@ func _exit_tree() -> void:
 
 ## Synchronous build + attach (startup and tests).
 func add_zone(cell: Vector2i) -> void:
-	if not zones.has(cell):
+	if not zones.has(cell) or stale.has(cell):
 		_attach_zone(_build_zone(cell))
 
 
 ## Heavy part, thread-safe: only reads the noise and returns plain data.
 func _build_zone(cell: Vector2i) -> Dictionary:
+	var dens := density  # read first: if it changes mid-build, the zone is tagged old and rebuilt
 	var origin := Vector2(cell) * ZONE_SIZE
 	var n := ZONE_SIZE + 1
 	var half := ZONE_SIZE / 2
@@ -522,7 +529,7 @@ func _build_zone(cell: Vector2i) -> Dictionary:
 	arrays[Mesh.ARRAY_INDEX] = idx
 	var trees := tree_transforms(cell, mask)
 	var rocks := rock_transforms(cell, mask)
-	return {"cell": cell, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
+	return {"cell": cell, "density": dens, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
 		"rocks": rocks, "flowers": flower_transforms(cell, mask), "houses": lay.houses,
 		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask)}
 
@@ -641,9 +648,42 @@ func _attach_zone(d: Dictionary) -> void:
 		water.position.y = WATER_LEVEL
 		zone.add_child(water)
 
+	if zones.has(cell):  # rebuilt at a new density: the old zone stays until this one is ready
+		zones[cell].free()
+	if d.density == density:
+		stale.erase(cell)
+	else:
+		stale[cell] = true
 	zone_trees[cell] = d.trees
 	zones[cell] = zone
 	add_child(zone)
+
+
+## O: more or fewer trees, rocks and flowers. Loaded zones are rebuilt in the background, nearest first.
+func set_density(d: float) -> void:
+	density = d
+	for cell in zones:
+		stale[cell] = true
+	_update_hud()
+
+
+## P: how far zones are generated and the fog ends (the fog start keeps each season's proportion).
+func set_view_dist(d: float) -> void:
+	view_dist = d
+	seasons.env.fog_depth_end = d
+	seasons.base.fog = d * 0.4
+	seasons.set_season(seasons.season)  # re-derives the season's fog start and re-applies the hour
+	for cam in [player.camera, player.tp_cam]:
+		cam.far = d + 50.0
+	_update_hud()
+
+
+func _unhandled_input(e: InputEvent) -> void:
+	if e is InputEventKey and e.pressed and not e.echo:
+		if e.physical_keycode == KEY_O:
+			set_density(DENSITIES[(DENSITIES.find(density) + 1) % DENSITIES.size()])
+		elif e.physical_keycode == KEY_P:
+			set_view_dist(VIEW_DISTS[(VIEW_DISTS.find(view_dist) + 1) % VIEW_DISTS.size()])
 
 
 ## One draw call for every instance of `mesh` in a zone; `colors` (optional) tints each instance.
@@ -689,7 +729,8 @@ func _ground_color(h: float, up: float) -> Color:
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · C caméra · M carte · 1-4 saison · +/- heure · Échap souris\nZones : %d · Saison : %s · Heure : %s" % [zones.size(), seasons.NAMES[seasons.season], daynight.clock()]
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/remonter · Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O objets · P portée\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m" % [
+		zones.size(), seasons.NAMES[seasons.season], daynight.clock(), density, view_dist]
 
 
 func _setup_environment() -> void:
