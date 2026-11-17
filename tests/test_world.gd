@@ -58,6 +58,59 @@ func _init() -> void:
 	assert(per_model.min() > 0)  # every variant of every species is used
 	assert(w.rock_transforms(Vector2i(2, -1)) == w.rock_transforms(Vector2i(2, -1)))
 	print("rocks over 25 zones: plains-centred ", rocks_plain, ", hill-centred ", rocks_hill)
+	# Flowers: deterministic, each species somewhere within ~1 km, every season has a bloomer.
+	assert(w.flower_transforms(Vector2i(2, -1)) == w.flower_transforms(Vector2i(2, -1)))
+	var per_flower := []
+	per_flower.resize(w.flowers.size())
+	per_flower.fill(0)
+	for cx in range(-4, 5):
+		for cz in range(-4, 5):
+			var per_kind: Array = w.flower_transforms(Vector2i(cx, cz))
+			for k in per_kind.size():
+				per_flower[k] += per_kind[k].size()
+				for t in per_kind[k]:
+					assert(t.origin.y >= w.WATER_LEVEL + 0.2)
+	print("flowers over 81 zones: ", w.flowers.map(func(f): return f.name), " ", per_flower)
+	assert(per_flower.min() > 0)
+	# Villages and roads: some exist within 2 km, roads are symmetric and cross no water,
+	# houses sit off the roads and away from each other, and the layout clears trees there.
+	var villages := 0
+	var roads := 0
+	for gx in range(-5, 5):
+		for gz in range(-5, 5):
+			var g := Vector2i(gx, gz)
+			var v: Dictionary = w.village(g)
+			if not v.is_empty():
+				villages += 1
+				for hs in v.houses:
+					var p := Vector2(hs[0].x, hs[0].z)
+					assert(hs[0].y > w.WATER_LEVEL)
+					for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+						assert(not w._near_line(p, [w.road(g, g + d)], 8.0), "house on a road")
+			for d in [Vector2i(1, 0), Vector2i(0, 1)]:
+				var r: PackedVector2Array = w.road(g, g + d)
+				assert(r == w.road(g + d, g))
+				if not r.is_empty():
+					roads += 1
+					for p in r:
+						assert(w.height(p.x, p.y) >= w.WATER_LEVEL + 0.5)
+	print("villages %d, roads %d over 4 x 4 km" % [villages, roads])
+	assert(villages > 0 and roads > 0)
+	for gx in range(-3, 3):  # a zone with a house: no tree within the house's clearing
+		var v: Dictionary = w.village(Vector2i(gx, 0))
+		if v.is_empty() or v.houses.is_empty():
+			continue
+		var hp: Vector3 = v.houses[0][0]
+		var cell: Vector2i = w.cell_of(hp)
+		var lay: Dictionary = w.layout(cell)
+		var local: Vector2 = Vector2(hp.x, hp.z) - Vector2(cell) * w.ZONE_SIZE
+		for models in w.tree_transforms(cell, lay.mask):
+			for t in models:
+				assert(Vector2(t.origin.x, t.origin.z).distance_to(local) > 7.0, "tree inside a house")
+		assert(lay.houses.any(func(l): return not l.is_empty()))
+		break
+	for season in ["summer", "autumn", "winter", "spring"]:
+		assert(w.flowers.any(func(f): return season in f.bloom), "nothing blooms in " + season)
 	assert(rocks_plain + rocks_hill > 0)
 
 	print("ALL OK")

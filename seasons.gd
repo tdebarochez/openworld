@@ -7,36 +7,38 @@ extends Node
 enum Season { SUMMER, AUTUMN, WINTER, SPRING }
 const NAMES := ["Été", "Automne", "Hiver", "Printemps"]
 
-# Ground colours (sRGB) per season: sand, rock, peak, grass. Summer = world._ground_color, which
-# the terrain shader uses as keys to recognise each category in the mesh's vertex colours.
+# Ground colours (sRGB) per season: sand, rock, peak, grass, road. Summer = world._ground_color and
+# world.ROAD_COLOR, which the terrain shader uses as keys to recognise each category in the mesh.
 const GROUND := [
-	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.3, 0.55, 0.2)],
-	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.56, 0.5, 0.27)],
-	[Color(0.84, 0.85, 0.89), Color(0.5, 0.5, 0.53), Color(0.97, 0.98, 1.0), Color(0.9, 0.92, 0.96)],
-	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.38, 0.68, 0.24)],
+	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.3, 0.55, 0.2), Color(0.55, 0.45, 0.32)],
+	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.56, 0.5, 0.27), Color(0.5, 0.4, 0.28)],
+	[Color(0.84, 0.85, 0.89), Color(0.5, 0.5, 0.53), Color(0.97, 0.98, 1.0), Color(0.9, 0.92, 0.96), Color(0.76, 0.75, 0.76)],
+	[Color(0.76, 0.7, 0.5), Color(0.45, 0.42, 0.4), Color(0.92, 0.92, 0.95), Color(0.38, 0.68, 0.24), Color(0.55, 0.45, 0.32)],
 ]
 const AUTUMN_LEAVES := [Color(0.9, 0.7, 0.12), Color(0.9, 0.45, 0.08), Color(0.75, 0.16, 0.06),
 	Color(0.5, 0.3, 0.12), Color(0.85, 0.55, 0.1)]
 const DRY_LEAVES := Color(0.45, 0.3, 0.15)  # the odd oak keeps its dead leaves in winter
 const FRESH_LEAVES := Color(0.5, 0.8, 0.28)
 const BLOSSOM := [Color(0.97, 0.78, 0.85), Color(0.97, 0.95, 0.92)]
-# Sun colour/energy, haze (sky horizon + fog colour) target and mix, fog start relative to summer.
+# Sun colour/energy, haze (sky horizon + fog colour) target and mix, fog start relative to summer,
+# shadow opacity relative to summer (winter's overcast light: softer shadows, incl. the snowflakes').
 const LIGHT := [
-	{"sun": Color.WHITE, "energy": 1.0, "haze": Color.WHITE, "mix": 0.0, "fog": 1.0},
-	{"sun": Color(1.0, 0.85, 0.68), "energy": 0.9, "haze": Color(0.86, 0.76, 0.64), "mix": 0.45, "fog": 0.7},
-	{"sun": Color(0.8, 0.88, 1.0), "energy": 0.65, "haze": Color(0.82, 0.86, 0.92), "mix": 0.7, "fog": 0.5},
-	{"sun": Color(1.0, 0.98, 0.9), "energy": 1.05, "haze": Color(0.78, 0.88, 0.96), "mix": 0.2, "fog": 1.1},
+	{"sun": Color.WHITE, "energy": 1.0, "haze": Color.WHITE, "mix": 0.0, "fog": 1.0, "shadow": 1.0},
+	{"sun": Color(1.0, 0.85, 0.68), "energy": 0.9, "haze": Color(0.86, 0.76, 0.64), "mix": 0.45, "fog": 0.7, "shadow": 1.0},
+	{"sun": Color(0.8, 0.88, 1.0), "energy": 0.65, "haze": Color(0.82, 0.86, 0.92), "mix": 0.7, "fog": 0.5, "shadow": 0.45},
+	{"sun": Color(1.0, 0.98, 0.9), "energy": 1.05, "haze": Color(0.78, 0.88, 0.96), "mix": 0.2, "fog": 1.1, "shadow": 1.0},
 ]
+const PETALS := [Color(0.97, 0.62, 0.76), Color(0.95, 0.5, 0.68), Color(0.98, 0.8, 0.88)]  # pink reads on the sky
 const ICE := Color(0.62, 0.75, 0.86, 0.95)
 
 const TERRAIN_SHADER := """
 shader_type spatial;
-uniform vec3 key[4];  // summer ground colours as stored in the mesh (sRGB)
-uniform vec3 to[4];   // this season's colours (sRGB)
+uniform vec3 key[5];  // summer ground colours as stored in the mesh (sRGB)
+uniform vec3 to[5];   // this season's colours (sRGB)
 varying vec3 col;
 void vertex() {
 	int k = 0;
-	for (int i = 1; i < 4; i++) {
+	for (int i = 1; i < 5; i++) {
 		if (distance(COLOR.rgb, key[i]) < distance(COLOR.rgb, key[k])) k = i;
 	}
 	col = to[k];
@@ -73,7 +75,12 @@ var env: Environment
 var sky: ProceduralSkyMaterial
 var sun: DirectionalLight3D
 var base := {}  # summer light values
+const SEASON_KEYS := ["summer", "autumn", "winter", "spring"]  # as in assets/flowers/flowers.json
+var flower_mats := []  # per flower kind: its original material per surface
+var hidden_mat := StandardMaterial3D.new()  # alpha-scissored away, shadows included
 var snow: CPUParticles3D  # made in setup(), carried by the player
+var leaves: CPUParticles3D  # autumn: dead leaves drifting down
+var petals: CPUParticles3D  # spring: blossom petals floating
 # The Compatibility renderer (web) shades in sRGB, so instance colours must not be linearised there.
 var srgb_out := RenderingServer.get_current_rendering_method() == "gl_compatibility"
 
@@ -95,7 +102,8 @@ func setup() -> void:
 	sun = world.find_children("", "DirectionalLight3D", false, false)[0]
 	base = {"sun": sun.light_color, "energy": sun.light_energy, "top": sky.sky_top_color,
 		"haze": sky.sky_horizon_color, "fog": env.fog_depth_begin, "ambient": env.ambient_light_color,
-		"water": world.water_mat.albedo_color, "water_rough": world.water_mat.roughness}
+		"water": world.water_mat.albedo_color, "water_rough": world.water_mat.roughness,
+		"shadow": sun.shadow_opacity}
 	var shader := Shader.new()
 	shader.code = SNOWY_LEAVES_SHADER
 	for model in world.species.size():
@@ -106,8 +114,18 @@ func setup() -> void:
 		snowy.shader = shader
 		snowy.set_shader_parameter("leaf", mat.albedo_color)
 		snowy_mats.append(snowy)
+	hidden_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	hidden_mat.albedo_color = Color(1, 1, 1, 0)
+	for f in world.flowers:
+		var mats := []
+		for i in f.mesh.get_surface_count():
+			mats.append(f.mesh.surface_get_material(i))
+		flower_mats.append(mats)
 	_setup_snow()
-	world.player.add_child(snow)
+	leaves = _drifting(AUTUMN_LEAVES, Vector2(0.24, 0.15), 320, 9.0, Vector3(0.5, -0.7, 0.25))
+	petals = _drifting(PETALS, Vector2(0.11, 0.09), 400, 10.0, Vector3(0.35, -0.3, 0.15))
+	for p in [snow, leaves, petals]:
+		world.player.add_child(p)
 
 
 func _unhandled_input(e: InputEvent) -> void:
@@ -143,8 +161,11 @@ func set_season(s: Season) -> void:
 	env.fog_light_color = haze
 	env.fog_depth_begin = base.fog * l.fog
 	env.ambient_light_color = base.ambient * l.sun  # only used by the Compatibility renderer
-	snow.emitting = winter
-	snow.visible = winter
+	sun.shadow_opacity = base.shadow * l.shadow
+	_set_flowers()
+	for pair in [[snow, Season.WINTER], [leaves, Season.AUTUMN], [petals, Season.SPRING]]:
+		pair[0].emitting = s == pair[1]
+		pair[0].visible = s == pair[1]
 	world._update_hud()
 
 
@@ -184,6 +205,22 @@ func _recolour(mm: MultiMesh, trees: Array, origin: Vector3) -> void:
 	mm.buffer = buf
 
 
+## In bloom: whole plant. Out of season: foliage only (surface 0). Winter: under the snow, unless
+## it blooms in winter. Swaps materials on the shared meshes, so every zone follows at once.
+func _set_flowers() -> void:
+	for k in world.flowers.size():
+		var f: Dictionary = world.flowers[k]
+		var blooming: bool = SEASON_KEYS[season] in f.bloom
+		var buried := season == Season.WINTER and not blooming
+		for i in f.mesh.get_surface_count():
+			var show: bool = blooming or (i == 0 and not buried)
+			f.mesh.surface_set_material(i, flower_mats[k][i] if show else hidden_mat)
+
+
+func is_blooming(kind: int) -> bool:
+	return SEASON_KEYS[season] in world.flowers[kind].bloom
+
+
 func _set_ground() -> void:
 	var to := PackedVector3Array()
 	for c: Color in GROUND[season]:
@@ -217,3 +254,59 @@ func _setup_snow() -> void:
 	snow.mesh = flake
 	snow.emitting = false
 	snow.visible = false
+
+
+## Small flat quads (leaves, petals) drifting down and twirling around the player, each with a
+## random colour from `colours`. Wind = the sideways part of `gravity`. No shadows (just specks).
+func _drifting(colours: Array, size: Vector2, amount: int, lifetime: float, gravity: Vector3) -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	p.amount = amount
+	p.lifetime = lifetime
+	p.preprocess = lifetime * 0.5  # already drifting when the season switches
+	p.local_coords = false
+	p.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	p.emission_box_extents = Vector3(14, 2.5, 14)  # close to the camera, where specks read as leaves
+	p.position.y = 6.0
+	p.direction = Vector3.DOWN
+	p.spread = 60.0
+	p.gravity = gravity
+	p.initial_velocity_min = 0.2
+	p.initial_velocity_max = 0.8
+	p.particle_flag_rotate_y = true  # spin around the vertical…
+	p.angle_min = 0.0
+	p.angle_max = 360.0
+	p.angular_velocity_min = -220.0
+	p.angular_velocity_max = 220.0
+	p.scale_amount_min = 0.7
+	p.scale_amount_max = 1.4
+	var ramp := Gradient.new()  # colour_initial_ramp picks a random point per particle
+	ramp.interpolation_mode = Gradient.GRADIENT_INTERPOLATE_CONSTANT
+	ramp.offsets = PackedFloat32Array(range(colours.size()).map(func(i): return float(i) / colours.size()))
+	ramp.colors = PackedColorArray(colours)
+	p.color_initial_ramp = ramp
+	var quad := QuadMesh.new()
+	quad.size = size
+	quad.center_offset = Vector3(size.x * 0.4, 0, 0)  # off-centre, so the spin reads as a flutter
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.vertex_color_is_srgb = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	quad.material = mat
+	# …and tilt the quad so it shows its face, then its edge, as it spins.
+	var mesh := ArrayMesh.new()
+	var arrays := quad.get_mesh_arrays()
+	var tilt := Basis(Vector3.RIGHT, deg_to_rad(55.0))
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	for i in verts.size():
+		verts[i] = tilt * verts[i]
+		normals[i] = tilt * normals[i]
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	p.mesh = mesh
+	p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	p.emitting = false
+	p.visible = false
+	return p

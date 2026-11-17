@@ -1,0 +1,59 @@
+[
+  {
+    "name": "snowdrop",
+    "file": "snowdrop.glb",
+    "bloom": [
+      "winter"
+    ],
+    "habitat": "near_water",
+    "height_m": 0.14,
+    "colour": "white drooping bells with a green heart",
+    "real_plant": "snowdrop (Galanthus nivalis)"
+  },
+  {
+    "name": "tulip",
+    "file": "tulip.glb",
+    "bloom": [
+      "spring"
+    ],
+    "habitat": "plain",
+    "height_m": 0.41,
+    "colour": "scarlet red closed cups",
+    "real_plant": "garden tulip (Tulipa gesneriana)"
+  },
+  {
+    "name": "poppy",
+    "file": "poppy.glb",
+    "bloom": [
+      "summer"
+    ],
+    "habitat": "any",
+    "height_m": 0.52,
+    "colour": "bright red four-petalled cups with a black centre",
+    "real_plant": "corn poppy (Papaver rhoeas)"
+  },
+  {
+    "name": "heather",
+    "file": "heather.glb",
+    "bloom": [
+      "summer",
+      "autumn"
+    ],
+    "habitat": "hills",
+    "height_m": 0.32,
+    "colour": "mauve-pink flower spikes on a dark green mound",
+    "real_plant": "common heather (Calluna vulgaris)"
+  },
+  {
+    "name": "sunflower",
+    "file": "sunflower.glb",
+    "bloom": [
+      "summer",
+      "autumn"
+    ],
+    "habitat": "plain",
+    "height_m": 1.61,
+    "colour": "golden yellow rays around a brown disc",
+    "real_plant": "sunflower (Helianthus annuus)"
+  }
+]

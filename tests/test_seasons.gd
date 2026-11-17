@@ -46,7 +46,7 @@ func _check():
 	var s = w.seasons
 	var S = s.Season
 	# Summer palette = the colours world bakes into the terrain (the shader's category keys).
-	assert(s.GROUND[S.SUMMER] == [w._ground_color(0, 1), w._ground_color(5, 0.5), w._ground_color(30, 1), w._ground_color(5, 1)])
+	assert(s.GROUND[S.SUMMER] == [w._ground_color(0, 1), w._ground_color(5, 0.5), w._ground_color(30, 1), w._ground_color(5, 1), w.ROAD_COLOR])
 	var trees := _trees()
 	var kinds := {}
 	for t in trees:
@@ -96,6 +96,22 @@ func _check():
 		var to: PackedVector3Array = w.terrain_mat.get_shader_parameter("to")
 		var grass: Color = s.GROUND[season][3]
 		assert(to[3].is_equal_approx(Vector3(grass.r, grass.g, grass.b)))
+		# One drifting effect per season (none in summer); softer shadows only in winter.
+		assert(s.leaves.emitting == (season == S.AUTUMN) and s.petals.emitting == (season == S.SPRING))
+		assert((s.sun.shadow_opacity < s.base.shadow) == (season == S.WINTER))
+		# Flowers: blossom only in their season; in winter only winter bloomers are above the snow.
+		for k in w.flowers.size():
+			var m: Mesh = w.flowers[k].mesh
+			var blooming: bool = s.is_blooming(k)
+			assert((m.surface_get_material(1) != s.hidden_mat) == blooming, "%s blossom in season %d" % [w.flowers[k].name, season])
+			assert((m.surface_get_material(0) == s.hidden_mat) == (season == S.WINTER and not blooming))
+		# Birds are silent in winter.
+		var birds = w.find_children("", "Node3D", false, false).filter(func(n): return n.has_method("flock_goal"))[0]
+		if birds.flock.is_empty():
+			birds._spawn_flock(w.player.global_position)
+		var before: int = birds.chirps
+		birds._call(birds.flock[0], w.player.global_position)
+		assert((birds.chirps == before) == (season == S.WINTER), "bird calls in season %d" % season)
 
 	# Rewritten buffers keep each tree's transform (3x4 row-major layout).
 	var t0: Transform3D = w.zones.values()[0].get_children().filter(func(n): return n.has_meta("trees"))[0].get_meta("trees")[0]
