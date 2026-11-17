@@ -186,7 +186,7 @@ SPECIES = {
 }
 
 
-def build(name, fn, params, seed, bark, leaves):
+def build(name, fn, params, seed, bark, leaves, out=OUT):
     rng = random.Random(seed)
     bm = bmesh.new()
     fn(bm, rng, params)
@@ -208,12 +208,13 @@ def build(name, fn, params, seed, bark, leaves):
     bpy.context.scene.collection.objects.link(obj)
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
-    bpy.ops.export_scene.gltf(filepath=os.path.join(OUT, name + ".glb"), export_format="GLB",
+    bpy.ops.export_scene.gltf(filepath=os.path.join(out, name + ".glb"), export_format="GLB",
                               use_selection=True, export_yup=True)
 
 
-bpy.ops.wm.read_factory_settings(use_empty=True)
-os.makedirs(OUT, exist_ok=True)
-for s, (species, (fn, bark, leaves, variants)) in enumerate(SPECIES.items()):
-    for i, params in enumerate(variants):
-        build(f"{species}_{i}", fn, params, 10 * (s + 1) + i, bark, leaves)
+if __name__ == "__main__":  # tools/make_bushes.py imports the helpers above
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    os.makedirs(OUT, exist_ok=True)
+    for s, (species, (fn, bark, leaves, variants)) in enumerate(SPECIES.items()):
+        for i, params in enumerate(variants):
+            build(f"{species}_{i}", fn, params, 10 * (s + 1) + i, bark, leaves)

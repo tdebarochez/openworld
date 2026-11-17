@@ -23,16 +23,16 @@ func _physics_process(_delta: float) -> bool:
 	return false
 
 
-## All tree MultiMeshes of loaded zones: [{mm, kind, pos: Array[Vector3]}].
-func _trees() -> Array:
+## All tree (or bush) MultiMeshes of loaded zones: [{mm, kind (seasonal TreeKind), pos: Array[Vector3]}].
+func _trees(key := "trees") -> Array:
 	var out := []
 	for zone in w.zones.values():
 		for mmi in zone.get_children():
-			if mmi.has_meta("trees"):
+			if mmi.has_meta(key):
 				var pos := []
-				for t in mmi.get_meta("trees"):
+				for t in mmi.get_meta(key):
 					pos.append(zone.position + t.origin)
-				out.append({"mm": mmi.multimesh, "kind": w.species.find(mmi.multimesh.mesh) / w.TREE_VARIANTS, "pos": pos})
+				out.append({"mm": mmi.multimesh, "kind": w.seasons.leaf_kind(mmi.multimesh.mesh), "pos": pos})
 	return out
 
 
@@ -52,6 +52,10 @@ func _check():
 	for t in trees:
 		kinds[t.kind] = true
 	assert(kinds.size() == 3, "expected all species around the spawn")
+	var bushes := _trees("bushes")
+	var holly: Mesh = w.bush_meshes[w.BushKind.HOLLY * w.BUSH_VARIANTS]
+	var hazel_mat: StandardMaterial3D = s.leaf_mats[w.species.size() + w.BushKind.HAZEL * w.BUSH_VARIANTS]
+	assert(bushes.any(func(b): return b.mm.mesh == holly) and bushes.any(func(b): return b.kind == w.TreeKind.BIRCH))
 	var sun_energy: float = w.seasons.sun.light_energy
 	var water: Color = w.water_mat.albedo_color
 
@@ -73,6 +77,17 @@ func _check():
 						assert(c.r > c.g and c.g >= c.b, "autumn leaves should be warm, got %s" % c)
 				elif season != S.WINTER:
 					assert(c.is_equal_approx(w.leaf_tint(t.pos[i])), "conifers stay green")
+		# Bushes follow their trees: hazel bare in winter, holly green under snow, warm autumn leaves.
+		for t in bushes:
+			for i in t.pos.size():
+				var c := _colour(t.mm, i)
+				assert(c.is_equal_approx(s.leaf_color(t.kind, t.pos[i])), "stale bush colour: season %d" % season)
+				if season == S.WINTER and t.kind == w.TreeKind.BIRCH:
+					assert(c.a == 0.0, "hazel should be bare in winter")
+				if season == S.AUTUMN and t.kind != w.TreeKind.CONIFER:
+					assert(c.r > c.g and c.g >= c.b, "autumn bush leaves should be warm, got %s" % c)
+		assert((holly.surface_get_material(1) is ShaderMaterial) == (season == S.WINTER), "snow on the holly")
+		assert((hazel_mat.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR) == (season == S.WINTER))
 		var conifer_mat: Material = w.species[0].surface_get_material(1)
 		var oak_mat: StandardMaterial3D = s.leaf_mats[w.TreeKind.OAK * w.TREE_VARIANTS]
 		match season:
