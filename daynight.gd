@@ -1,7 +1,8 @@
 extends Node
 ## Day/night cycle. The time of day (hours, 0-24) runs on its own and is scrubbed with +/-.
 ## Combines with seasons.gd: `seasons.light` holds the season's noon light (keys sun, energy, top,
-## haze, fog, ambient) and apply() turns it into the final sun/sky/fog/ambient for the current hour.
+## haze, fog, ambient, shadow) and apply() turns it into the final sun/sky/fog/ambient for the current
+## hour and weather (weather.gd's overcast, rain and lightning flash).
 ## seasons.set_season() stores its values there and calls apply(); nothing else writes those.
 ## At night the DirectionalLight3D becomes the moon (opposite the sun). The sky's sun/moon disc
 ## comes from a separate sky-only light: lit by the dim scene light, it showed as a dark blob in
@@ -24,6 +25,7 @@ const DUSK_HAZE := Color(1.45, 0.8, 0.5)
 const NIGHT_HAZE := Color(0.1, 0.14, 0.3)
 const NIGHT_TOP := Color(0.04, 0.07, 0.2)
 const NIGHT_AMBIENT := Color(0.3, 0.4, 0.75)  # Compatibility renderer only (flat ambient)
+const FLASH := 0.7  # sky brightening by a close lightning strike
 # Milky Way: pole of its great circle (22° up towards SE, so the band arches 68° high from SW to NE),
 # core longitude along it from the SW horizon (24° up in the WSW), and glow colours/strength (sRGB).
 const GALAXY_POLE := Vector3(0.656, 0.375, 0.656)
@@ -35,6 +37,7 @@ const MW_GRID := 384  # glow computed at this width, then upscaled (build time ~
 
 var world  # world.gd
 var time := START
+var day := 0
 var held := {}  # physical keycode -> +1/-1 while a +/- key is down
 var _applied := -1  # minute of the day last applied
 var disc := DirectionalLight3D.new()  # sky-only: draws the sun/moon, lights nothing
@@ -83,8 +86,14 @@ func _process(delta: float) -> void:
 
 ## Applied every frame: stepping the light once per game minute made every shadow jump 0.25°.
 func set_time(h: float) -> void:
+	day += floori(h / 24.0)  # past midnight either way
 	time = fposmod(h, 24.0)
 	apply()
+
+
+## Game hours since day 0 at midnight: the clock the weather and the cloud drift follow.
+func hours() -> float:
+	return day * 24.0 + time
 
 
 func clock() -> String:
@@ -122,18 +131,33 @@ func apply() -> void:
 	disc.light_color = sun.light_color
 	disc.light_energy = (1.0 + warm) * smoothstep(0.0, 0.05, dir.y) if dir.y >= 0.0 \
 		else 0.6 * smoothstep(0.0, 0.05, -dir.y)
-	var haze: Color = s.haze * NIGHT_HAZE.lerp(Color.WHITE, day).lerp(DUSK_HAZE, warm)
+	# Weather: overcast dims the sun and its shadows and greys the sky, rain shortens the view,
+	# lightning flashes the sky and the ambient light.
+	var wx = world.weather
+	var dim: float = wx.overcast if wx else 0.0
+	var flash: Color = Color(1, 1, 1, 0) * (wx.flash * FLASH if wx else 0.0)
+	sun.light_energy *= 1.0 - 0.75 * dim
+	sun.shadow_opacity = s.shadow * (1.0 - 0.85 * dim)
+	var haze: Color = _grey(s.haze * NIGHT_HAZE.lerp(Color.WHITE, day).lerp(DUSK_HAZE, warm), dim) + flash
 	sky.sky_horizon_color = haze
 	sky.ground_horizon_color = haze
 	sky.ground_bottom_color = haze
-	sky.sky_top_color = s.top * NIGHT_TOP.lerp(Color.WHITE, day)
-	sky.sky_cover_modulate = Color(1, 1, 1, 1.0 - smoothstep(-0.25, -0.05, dir.y))  # stars once the sun is down
+	sky.sky_top_color = _grey(s.top * NIGHT_TOP.lerp(Color.WHITE, day), dim) + flash
+	# Stars once the sun is down, hidden by overcast (sheet clouds aren't quite opaque, stars are bright).
+	sky.sky_cover_modulate = Color(1, 1, 1, (1.0 - smoothstep(-0.25, -0.05, dir.y)) * (1.0 - dim))
 	env.fog_light_color = haze
-	env.fog_depth_begin = s.fog
-	env.ambient_light_color = s.ambient * NIGHT_AMBIENT.lerp(Color.WHITE, day)
+	env.fog_depth_begin = s.fog * (1.0 - 0.6 * (wx.rain if wx else 0.0))
+	env.ambient_light_color = s.ambient * NIGHT_AMBIENT.lerp(Color.WHITE, day) * (1.0 - 0.3 * dim)
+	env.ambient_light_energy = world.seasons.base.ambient_energy * (1.0 + 6.0 * flash.r)
 	if floori(time * 60.0) != _applied:  # the clock only shows minutes: don't relayout the HUD every frame
 		_applied = floori(time * 60.0)
 		world._update_hud()
+
+
+## Overcast sky: towards its own grey, darker.
+static func _grey(c: Color, dim: float) -> Color:
+	var l := c.get_luminance()
+	return c.lerp(Color(l, l, l * 1.05), dim * 0.8) * (1.0 - 0.45 * dim)
 
 
 ## Star field and Milky Way for the sky cover (equirectangular, row 0 = zenith), faded in at night.

@@ -385,8 +385,8 @@ func _init_look(b: Bird) -> void:
 
 
 func _call(b: Bird, pp: Vector3) -> void:
-	if world.seasons.season == world.seasons.Season.WINTER:
-		return  # birds keep quiet in winter
+	if world.seasons.season == world.seasons.Season.WINTER or (world.weather and world.weather.rain > 0.05):
+		return  # birds keep quiet in winter and in the rain
 	chirps += 1
 	var flocked := b.species == Species.DUSK
 	if not is_inside_tree() or b.pos.distance_to(pp) > (160.0 if flocked else 60.0):

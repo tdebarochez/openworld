@@ -81,7 +81,7 @@ const SEASON_KEYS := ["summer", "autumn", "winter", "spring"]  # as in assets/fl
 var flower_mats := []  # per flower kind: its original material per surface
 var hidden_mat := StandardMaterial3D.new()  # alpha-scissored away, shadows included
 var light := {}  # this season's noon light (keys of base); daynight.gd applies it for the hour
-var snow: CPUParticles3D  # made in setup(), carried by the player
+var snow: CPUParticles3D  # made in setup(), carried by the player; weather.gd turns it on
 var leaves: CPUParticles3D  # autumn: dead leaves drifting down
 var petals: CPUParticles3D  # spring: blossom petals floating
 # The Compatibility renderer (web) shades in sRGB, so instance colours must not be linearised there.
@@ -106,7 +106,7 @@ func setup() -> void:
 	base = {"sun": sun.light_color, "energy": sun.light_energy, "top": sky.sky_top_color,
 		"haze": sky.sky_horizon_color, "fog": env.fog_depth_begin, "ambient": env.ambient_light_color,
 		"water": world.water_mat.albedo_color, "water_rough": world.water_mat.roughness,
-		"shadow": sun.shadow_opacity}
+		"shadow": sun.shadow_opacity, "ambient_energy": env.ambient_light_energy}
 	light = base
 	var shader := Shader.new()
 	shader.code = SNOWY_LEAVES_SHADER
@@ -168,11 +168,10 @@ func set_season(s: Season) -> void:
 	var l: Dictionary = LIGHT[s]
 	light = {"sun": base.sun * l.sun, "energy": base.energy * l.energy, "haze": base.haze.lerp(l.haze, l.mix),
 		"top": base.top.lerp(l.haze, l.mix * 0.5), "fog": base.fog * l.fog,
-		"ambient": base.ambient * l.sun}  # ambient: only used by the Compatibility renderer
-	world.daynight.apply()  # final sun/sky/fog = this season's light × time of day
-	sun.shadow_opacity = base.shadow * l.shadow
+		"ambient": base.ambient * l.sun, "shadow": base.shadow * l.shadow}  # ambient: only used by the Compatibility renderer
+	world.daynight.apply()  # final sun/sky/fog = this season's light × time of day × weather
 	_set_flowers()
-	for pair in [[snow, Season.WINTER], [leaves, Season.AUTUMN], [petals, Season.SPRING]]:
+	for pair in [[leaves, Season.AUTUMN], [petals, Season.SPRING]]:  # snow: weather.gd (winter precipitation)
 		pair[0].emitting = s == pair[1]
 		pair[0].visible = s == pair[1]
 	world._update_hud()
