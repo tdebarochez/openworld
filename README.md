@@ -18,6 +18,7 @@ Le monde se génère au fil des déplacements : prairies, forêts, lacs et monta
   - de la fumée aux cheminées, des fenêtres qui s'allument le soir et du linge qui sèche ;
   - des forges, et des moutons et des vaches dans les prés autour.
 - **Les repères** : tours en ruine, moulins à vent, ponts de pierre, chapelles et menhirs. Des cabanes de pêcheur avec leur ponton bordent les lacs.
+- **Les feux de camp** : dans des clairières en forêt, loin des villages. On les repère à leur fumée le jour et à leur lueur la nuit, et on les entend crépiter.
 - **Le temps** :
   - un cycle jour/nuit, avec la Voie lactée ;
   - quatre saisons, avec chacune sa musique ;

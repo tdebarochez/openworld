@@ -1,6 +1,7 @@
 extends Node
 ## Ambient sounds by place, heard from the player's ear (tools/make_sounds.py): water lapping on a lake
-## shore (not on winter ice), a forge's hammer at work, the bells and calls of a flock. One
+## shore (not on winter ice), a forge's hammer at work, the bells and calls of a flock, a campfire
+## crackling (campfires.gd: they burn day and night). One
 ## AudioStreamPlayer3D per kind (POOL in all), moved to the nearest source in range a few times a
 ## second, stopped when none is. No village bell until there is a bell tower to ring it from
 ## (assets/sounds/bell.wav is kept for it).
@@ -9,14 +10,16 @@ const LOOK := 0.5  # s between searches
 const SHORE_R := 40.0  # m: lapping heard within this of open water
 const FORGE_R := 60.0
 const FLOCK_R := 70.0
+const FIRE_R := 25.0
 const WORK_HOURS := Vector2(7.5, 19.0)  # the smith at the anvil
 const FLOCK_HOURS := Vector2(5.5, 22.0)  # flocks quiet at night
-const POOL := 3
+const POOL := 4
 
 var world  # world.gd (the parent)
 var water := AudioStreamPlayer3D.new()
 var forge := AudioStreamPlayer3D.new()
 var flock := AudioStreamPlayer3D.new()
+var fire := AudioStreamPlayer3D.new()
 var _look := 0.0
 
 
@@ -25,7 +28,8 @@ func _ready() -> void:
 	# [player, stream, dB, metres at full volume, metres heard]
 	for p in [[water, preload("res://assets/sounds/water_lap.wav"), -4.0, 4.0, SHORE_R + 10.0],
 			[forge, preload("res://assets/sounds/forge.wav"), -2.0, 6.0, FORGE_R + 10.0],
-			[flock, preload("res://assets/sounds/sheep.wav"), -3.0, 6.0, FLOCK_R + 10.0]]:
+			[flock, preload("res://assets/sounds/sheep.wav"), -3.0, 6.0, FLOCK_R + 10.0],
+			[fire, preload("res://assets/sounds/campfire.wav"), -1.0, 3.0, FIRE_R + 5.0]]:
 		var a: AudioStreamPlayer3D = p[0]
 		a.stream = p[1]
 		a.volume_db = p[2]
@@ -58,6 +62,7 @@ func update(p: Vector3) -> void:
 			flock.stop()
 			flock.stream = s
 	_play(flock, herd[0] if herd else null)
+	_play(fire, world.camps.nearest(p, FIRE_R))
 
 
 ## Plays `a` at `at` (looping from a random point when it starts), or stops it for null.
