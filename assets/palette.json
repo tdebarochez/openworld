@@ -26,9 +26,13 @@
     "ash": "#a19b94",
     "feather": "#f7eedc",
     "comb": "#d9463b",
-    "beak": "#efa43c"
+    "beak": "#efa43c",
+    "ember": "#ff8a3d",
+    "smoke": "#d9d4cc",
+    "limestone": "#cdbd9c"
   },
   "cats": ["ginger", "soot", "ash"],
+  "laundry": ["snow", "cream", "rose", "sky", "gold", "leaf_light", "terracotta"],
   "ground": {
     "_order": "sand, rock, peak, grass, road; summer is what world.gd bakes into the terrain (the shader's keys)",
     "summer": ["sand", "stone", "snow", "grass", "ochre"],

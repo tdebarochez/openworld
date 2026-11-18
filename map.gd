@@ -4,9 +4,20 @@ extends TextureRect
 const RADIUS := 6  # zones shown on each side of the player's zone
 const REFRESH := 0.25  # seconds between redraws while open
 
+# Landmark glyphs (world.Landmark order): '#' = fill; the pixels round them (and holes) get a dark rim.
+const GLYPHS := [
+	["#.#.#", "#####", ".###.", ".###.", ".#.#.", ".###.", "#####"],  # ruined tower
+	["#...#", ".#.#.", "..#..", ".#.#.", "#.#.#", ".###.", ".###."],  # windmill
+	["#######", "#######", "##...##", "#.....#"],  # bridge
+	["..#..", ".###.", "..#..", ".###.", "#####", ".#.#.", ".###."],  # chapel
+	[".#.#.", "#...#", ".....", "#...#", ".#.#."],  # standing stones
+]
+const GLYPH_COLOURS := ["limestone", "cream", "stone", "gold", "ash"]
+
 var world: Node3D
 var clouds := FastNoiseLite.new()
 var _since := 0.0
+var names: Array[Label] = []  # village name labels, reused between refreshes
 
 
 func _init() -> void:
@@ -59,6 +70,40 @@ func refresh() -> void:
 			if tile:
 				img.blit_rect(tile, Rect2i(0, 0, px, px), Vector2i(cx, cy) * px)
 
+	# Landmarks (generated zones only): a pale glyph per kind with a dark rim; village names as labels.
+	var lg: float = world.LANDMARK_GRID
+	for gx in range(floori(corner.x / lg), floori((corner.x + size * m_per_px) / lg) + 1):
+		for gy in range(floori(corner.y / lg), floori((corner.y + size * m_per_px) / lg) + 1):
+			var s: Dictionary = world.landmark_site(Vector2i(gx, gy))
+			if not s.is_empty() and world.map_tiles.has(world.cell_of(s.pos)):
+				_glyph(img, Vector2i((Vector2(s.pos.x, s.pos.z) - corner) / m_per_px), GLYPHS[s.kind],
+					world.seasons.colour(GLYPH_COLOURS[s.kind]))
+	var used := 0
+	var vg: float = world.VILLAGE_GRID
+	var k := minf(self.size.x, self.size.y) / size  # screen px per map px (keep-aspect, centred)
+	var offset := (self.size - Vector2.ONE * size * k) / 2.0
+	for gx in range(floori(corner.x / vg), floori((corner.x + size * m_per_px) / vg) + 1):
+		for gy in range(floori(corner.y / vg), floori((corner.y + size * m_per_px) / vg) + 1):
+			var site: Dictionary = world.village_site(Vector2i(gx, gy))
+			if site.is_empty() or not world.map_tiles.has(world.cell_of(Vector3(site.centre.x, 0, site.centre.y))):
+				continue
+			if used == names.size():
+				var l := Label.new()
+				l.add_theme_font_size_override("font_size", 14)
+				l.add_theme_constant_override("outline_size", 5)
+				l.add_theme_color_override("font_outline_color", Color(1, 1, 1, 0.75))
+				l.add_theme_color_override("font_color", Color(0.24, 0.21, 0.22))
+				add_child(l)
+				names.append(l)
+			var l: Label = names[used]
+			l.text = world.village(Vector2i(gx, gy)).name
+			l.reset_size()
+			l.position = offset + (site.centre - corner) / m_per_px * k - Vector2(l.size.x / 2.0, l.size.y + 6.0)
+			l.visible = true
+			used += 1
+	for i in range(used, names.size()):
+		names[i].visible = false
+
 	# Player: red dot plus a short line in the facing direction.
 	var p: Vector3 = world.player.global_position
 	var at := (Vector2(p.x, p.z) - corner) / m_per_px
@@ -73,3 +118,20 @@ func refresh() -> void:
 	var pl = world.player
 	pivot_offset = self.size / 2.0
 	rotation = pl.ISO_YAW if pl.view == pl.View.ISO else 0.0
+
+
+## Draws `glyph` centred on `at`: fill colour on '#', a dark rim on every other pixel touching one.
+static func _glyph(img: Image, at: Vector2i, glyph: Array, fill: Color) -> void:
+	var h := glyph.size()
+	var w: int = glyph[0].length()
+	var o := at - Vector2i(w / 2, h / 2)
+	var on := func(x: int, y: int) -> bool: return x >= 0 and y >= 0 and x < w and y < h and glyph[y][x] == "#"
+	for y in range(-1, h + 1):
+		for x in range(-1, w + 1):
+			var q := o + Vector2i(x, y)
+			if not Rect2i(Vector2i.ZERO, img.get_size()).has_point(q):
+				continue
+			if on.call(x, y):
+				img.set_pixelv(q, fill)
+			elif on.call(x - 1, y) or on.call(x + 1, y) or on.call(x, y - 1) or on.call(x, y + 1):
+				img.set_pixelv(q, Color(0.24, 0.21, 0.22))

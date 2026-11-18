@@ -1,7 +1,8 @@
 extends SceneTree
 # Run: godot --headless --path . -s tests/test_daynight.gd
 # Time wraps and is moved by +/-, the sun sets at night, the sun path follows the season (46°N),
-# a season's tint survives the hour, and the night sky has a Milky Way.
+# a season's tint survives the hour, and the night sky has a Milky Way; the grade follows the hour,
+# the morning mist, bloom, and (Forward+) SSAO and low-sun shafts are on.
 
 var w
 var frames := 0
@@ -210,4 +211,82 @@ func _check():
 	assert(lights.all(func(l): return not l.distance_fade_enabled))
 	w.player.set_view(w.player.View.FIRST)
 	assert(lights.all(func(l): return l.distance_fade_enabled))
+	return _check_post(d)
+
+
+## Grade by the hour, morning mist, bloom, Forward+ SSAO and sun shafts (summer, clear sky).
+func _check_post(d) -> bool:
+	var env: Environment = w.seasons.env
+	var S = w.seasons.Season
+	w.seasons.set_season(S.SUMMER)
+	w.weather.set_preset(1)  # cirrus: no dimming
+	var decl: float = d.DECLINATION[S.SUMMER]
+	var rs := _rise_set(d, decl)
+	var curve: Gradient = env.adjustment_color_correction.gradient
+	var compat: bool = d.compat
+	# The curve follows the hour: neutral midday = world.GRADE (Compatibility: a share of its bend).
+	d.set_time(d.NOON)
+	var noon: Array = w.grade_stops(w.GRADE, compat)
+	for i in 3:
+		assert(curve.get_color(i).is_equal_approx(noon[i]), "midday grade")
+	var mid := func(h: float) -> Color:  # the mid stop of the raw (uncompressed) grade at an hour
+		return d.grade(d.sun_dir(h, decl), 0.0)[1]
+	var n: Color = mid.call(d.NOON)
+	var dawn: Color = mid.call(rs[0] + 0.3)
+	var golden: Color = mid.call(rs[1] - 1.5)
+	var dusk: Color = d.grade(d.sun_dir(rs[1] + 0.3, decl), 0.0)[0]  # sun just under the horizon: darks
+	var night: Color = mid.call(fposmod(d.NOON + 12.0, 24.0))
+	assert(dawn.b - dawn.r > n.b - n.r + 0.03, "cool dawn")
+	assert(golden.r - golden.b > n.r - n.b + 0.04, "golden late afternoon")
+	assert(dusk.r > w.GRADE[0].r + 0.03 and dusk.b > w.GRADE[0].b, "violet dusk")
+	assert(night.b > n.b + 0.05 and night.r < n.r - 0.05, "blue night")
+	var flat: Color = d.grade(d.sun_dir(rs[1] - 1.5, decl), 1.0)[1]
+	var off := func(c: Color) -> float: return absf(c.r - n.r) + absf(c.g - n.g) + absf(c.b - n.b)
+	assert(off.call(flat) < off.call(golden) * 0.5, "overcast flattens the grade towards midday's")
+	d.set_time(rs[1] - 1.5)
+	assert(not curve.get_color(1).is_equal_approx(noon[1]), "apply() writes the hour's grade")
+
+	# Morning mist: thickest around sunrise, gone by noon and in the evening; thicker in autumn and
+	# after rain, lighter in iso. The pass reads the depth buffer (pools in low ground, clear nearby).
+	assert(is_equal_approx(d.mist_amount(rs[0], decl), 1.0) and d.mist_amount(d.NOON, decl) == 0.0)
+	assert(d.mist_amount(rs[0] + 4.0, decl) == 0.0 and d.mist_amount(rs[1], decl) == 0.0)
+	assert(w.mist_mat.shader.code.contains("hint_depth_texture"))
+	d.set_time(rs[0] + 0.5)
+	var summer_mist: float = w.mist_mat.get_shader_parameter("density")
+	assert(w.mist.visible and summer_mist > 0.0)
+	w.player.set_view(w.player.View.ISO)
+	d.apply()
+	assert(w.mist_mat.get_shader_parameter("density") < summer_mist * 0.5, "iso: lighter mist")
+	w.player.set_view(w.player.View.FIRST)
+	w.seasons.set_season(S.AUTUMN)
+	d.set_time(_rise_set(d, d.DECLINATION[S.AUTUMN])[0] + 0.5)
+	var autumn_mist: float = w.mist_mat.get_shader_parameter("density")
+	assert(autumn_mist > summer_mist, "autumn mist")
+	w.weather.damp = 1.0
+	d.apply()
+	assert(w.mist_mat.get_shader_parameter("density") > autumn_mist * 1.5, "after rain")
+	w.seasons.set_season(S.SUMMER)
+	w.weather.set_preset(1)
+	d.set_time(d.NOON)
+	assert(not w.mist.visible)
+
+	# Bloom: on, soft, high threshold, and the lit lanterns go past it (the grass doesn't).
+	assert(env.glow_enabled and env.glow_intensity <= 0.5 and env.glow_bloom == 0.0)
+	assert(env.glow_hdr_threshold >= 0.9)
+	w.set_lamps(true)
+	var lamp: Color = w.lamp_color * w.lamp_glass.emission_energy_multiplier
+	assert(maxf(lamp.r, maxf(lamp.g, lamp.b)) > env.glow_hdr_threshold, "lanterns bloom")
+	w.set_lamps(false)
+
+	# Forward+: SSAO on (world.SSAO), sun shafts (volumetric fog) only while the sun is low, never in iso.
+	if not compat:
+		assert(env.ssao_enabled == w.SSAO)
+		d.set_time(rs[1] - 1.5)
+		assert(env.volumetric_fog_enabled == w.SUN_SHAFTS and (env.volumetric_fog_density > 0.0 or not w.SUN_SHAFTS))
+		w.player.set_view(w.player.View.ISO)
+		d.apply()
+		assert(not env.volumetric_fog_enabled)
+		w.player.set_view(w.player.View.FIRST)
+		d.set_time(d.NOON)
+		assert(not env.volumetric_fog_enabled, "no shafts at noon")
 	return true

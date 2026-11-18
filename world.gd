@@ -30,6 +30,57 @@ const SHADOW_BLUR := 1.5
 const AGX_CONTRAST := 1.7
 const GRADE_SATURATION := 1.4  # AgX desaturates bright colours: brought back after it
 const GRADE := [Color(0.03, 0.05, 0.11), Color(0.53, 0.5, 0.46), Color(1.0, 0.97, 0.9)]  # bluish darks, warm lights
+const COMPAT_GRADE := 0.35  # Compatibility applies the curve far stronger: this share of its bend only
+# Post. Glow: only what goes past the HDR threshold blooms (sun disc, lit lanterns, sunlit snow), softly.
+# The heavy Forward+-only effects can be turned off here: SSAO (subtle, over the baked vertex AO) and
+# SUN_SHAFTS (volumetric fog lit by the shadowed sun, only while it is low: rays through the trees).
+# The morning valley mist (MIST_SHADER, both renderers) is daynight.gd's MIST.
+const GLOW := 0.35
+const GLOW_THRESHOLD := 1.0
+const COMPAT_GLOW_THRESHOLD := 0.9
+const SSAO := true
+const SUN_SHAFTS := true
+# Morning mist: a full-screen pass integrating an exponential height fog (densest at the water level,
+# thinning out above) along each view ray up to the depth buffer, so it pools in valleys and over lakes,
+# stays clear around the camera and hills poke out of it. daynight.gd sets its density and colours.
+const MIST_SHADER := """
+shader_type spatial;
+render_mode unshaded, fog_disabled, depth_test_disabled, depth_draw_never, cull_disabled, shadows_disabled;
+uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
+uniform float density = 0.0;  // extinction per m at the floor
+uniform float floor_y = 0.0;
+uniform float falloff = 0.3;  // per m above the floor
+uniform float max_alpha = 0.85;
+uniform vec3 colour;  // sRGB (no source_color: Compatibility outputs sRGB, see OUTPUT_IS_SRGB)
+uniform vec3 glow;  // towards the sun (forward scattering), sRGB
+uniform vec3 sun_dir = vec3(0.0, 1.0, 0.0);
+void vertex() {
+	POSITION = vec4(VERTEX.xy * 2.0, 0.5, 1.0);  // QuadMesh 1x1: the whole screen
+}
+void fragment() {
+	float depth = texture(depth_tex, SCREEN_UV).x;
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+	vec3 ndc = vec3(SCREEN_UV, depth) * 2.0 - 1.0;
+#else
+	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth);
+#endif
+	vec4 p = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
+	vec4 o = INV_PROJECTION_MATRIX * vec4(ndc.xy, 1.0, 1.0);  // near plane: reversed z in both renderers (4.7)
+	vec3 wp = (INV_VIEW_MATRIX * vec4(p.xyz / p.w, 1.0)).xyz;
+	vec3 wo = (INV_VIEW_MATRIX * vec4(o.xyz / o.w, 1.0)).xyz;  // ray start (camera, or ortho plane)
+	float t = length(wp - wo);
+	vec3 rd = (wp - wo) / max(t, 1e-4);
+	// ∫ density·exp(-falloff·(y - floor)) along the ray, clamped at the floor (no overflow under water).
+	float ya = max(wo.y - floor_y, 0.0);
+	float yb = max(wp.y - floor_y, 0.0);
+	float ea = exp(-falloff * ya);
+	float dy = yb - ya;
+	float od = density * t * (abs(dy) > 0.01 ? (ea - exp(-falloff * yb)) / (falloff * dy) : ea);
+	vec3 c = mix(colour, glow, pow(max(dot(rd, sun_dir), 0.0), 8.0));
+	ALBEDO = OUTPUT_IS_SRGB ? c : mix(pow((c + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), c * (1.0 / 12.92), lessThan(c, vec3(0.04045)));
+	ALPHA = (1.0 - exp(-od)) * max_alpha;
+}
+"""
 # Detail by distance. FULL: everything. LIGHT (beyond NEAR_DIST): terrain, trees, houses and water only —
 # no rocks, flowers or collision (nothing out there can be touched). COARSE (beyond COARSE_DIST): LIGHT
 # with a COARSE_RES m terrain grid (16x fewer triangles) and skirts hiding the cracks against finer
@@ -111,6 +162,51 @@ const CABIN_GRID := 256.0  # one candidate lakeside cabin per square, kept only 
 const CABIN_TRIES := 16  # spots tried per square, each walked onto the nearest shoreline
 const CABIN_MARGIN := 24.0  # m: shorelines kept this far inside their square, so cabins stay apart
 const CABIN_CLEAR := 10.0  # m kept free of trees, bushes and rocks round a cabin and along its pier
+# Landmarks seen from afar (tools/make_landmarks.py): at most one per LANDMARK_GRID square: a bridge
+# where a lake neck allows, else the first kind of a per-square shuffle that the terrain suits
+# (_landmark_site). Shown at every detail level, collision (trimesh) in full zones only.
+enum Landmark { TOWER, WINDMILL, BRIDGE, CHAPEL, STONES }
+const LANDMARK_FILES := ["tower", "windmill", "bridge", "chapel", "stones"]  # Landmark order, then windmill_sails
+const LANDMARK_NAMES := ["Tour en ruine", "Moulin à vent", "Pont de pierre", "Chapelle", "Pierres levées"]
+const LANDMARK_GRID := 600.0
+const LANDMARK_MARGIN := 60.0  # m: sites kept this far inside their square, so two are ≥ 120 m apart
+const LANDMARK_CLEAR := [16.0, 20.0, 5.0, 18.0, 16.0]  # m kept free of trees, bushes and rocks, per Landmark
+const LANDMARK_OPEN := -0.08  # windmills, chapels and stones stand where forest() is below this: meadows
+const WINDMILL_HUB := Vector3(0, 8.3, 3.2)  # sails' axle in the windmill's frame (tools/make_landmarks.py)
+const BRIDGE_END := 14.8  # m from mid-span to each ramp's end, along the bridge's X
+# The sails turn about their axle (+Z) in the vertex shader, phase from the windmill's position: one
+# MultiMesh per zone, no script per frame. COLOR = baked shading (sRGB, as in CAT_SHADER).
+const SAILS_SHADER := """
+shader_type spatial;
+uniform vec3 albedo : source_color;
+uniform float speed = 0.45;  // rad/s
+void vertex() {
+	float a = TIME * speed + dot(MODEL_MATRIX[3].xz, vec2(0.37, 0.51));
+	mat2 r = mat2(vec2(cos(a), sin(a)), vec2(-sin(a), cos(a)));
+	VERTEX.xy = r * VERTEX.xy;
+	NORMAL.xy = r * NORMAL.xy;
+	if (!OUTPUT_IS_SRGB) {
+		COLOR.rgb = mix(pow((COLOR.rgb + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), COLOR.rgb * (1.0 / 12.92), lessThan(COLOR.rgb, vec3(0.04045)));
+	}
+}
+void fragment() {
+	ALBEDO = albedo * COLOR.rgb;
+	ROUGHNESS = 0.9;
+}
+"""
+# Each village's particularity, at its square (_village): a well or a fountain in the middle, or a
+# market of up to three stalls round it, between the roads, facing the centre.
+enum Feature { WELL, FOUNTAIN, MARKET }
+const FEATURE_FILES := ["well", "fountain", "stall_0", "stall_1", "stall_2"]  # model index = min(Feature, 2) + stall
+const FEATURE_NAMES := ["puits", "fontaine", "marché"]
+const STALL_RADIUS := 4.5  # m from the village centre to a stall's centre (its back corners ~5.6 m, benches at 8)
+const PLACE_DIST := 80.0  # m from a village centre (40 from a landmark) where its name shows on the HUD
+# Place names (_place_name): stem = start + vowel + consonants + ending, French/Occitan/Alpine-sounding.
+const NAME_START := ["B", "Br", "C", "Ch", "D", "F", "G", "Gr", "L", "M", "P", "Pr", "R", "S", "T", "V", "Ar", "Es", "Or", "J"]
+const NAME_VOWEL := ["a", "e", "i", "o", "ou", "au"]
+const NAME_CONS := ["r", "s", "l", "n", "v", "t", "rn", "ss", "ch", "nt", "rb", "rd", "z", "g"]
+const NAME_END := ["ac", "an", "ans", "ens", "ès", "ieu", "oux", "ols", "ade", "ière", "ille", "az", "oz", "ey", "in", "on", "ay", "eil", "ence", "ette"]
+const SAINTS := ["Martin", "Jory", "Brice", "Aubin", "Amans", "Géraud", "Fiacre", "Loup", "Vincent", "Agrève", "Privat", "Ours", "Hilaire", "Côme", "Julien", "Didier", "Romain", "Bonnet"]
 const ROAD_HALF := 2.0  # road half-width, metres
 const ROAD_LINKS := 2  # each village gets a road to its nearest villages…
 const ROAD_MAX := 900.0  # …within this distance
@@ -148,6 +244,8 @@ var lamp_color := seasons.colour("lamp")
 var daynight  # daynight.gd, made in _ready
 var weather  # weather.gd, same
 var water_mat := StandardMaterial3D.new()
+var mist := MeshInstance3D.new()  # full-screen morning mist (MIST_SHADER), shown by daynight.gd
+var mist_mat := ShaderMaterial.new()  # its uniforms: daynight.gd sets them every frame
 var species: Array[Mesh] = []  # indexed by kind * TREE_VARIANTS + variant
 var bush_meshes: Array[Mesh] = []  # indexed by kind * BUSH_VARIANTS + variant
 var trunk_shape := CylinderShape3D.new()
@@ -166,6 +264,11 @@ var house_radius: Array[float] = []  # per kind, from the origin to the farthest
 var cabin_meshes: Array[Mesh] = []
 var cabin_shapes: Array[Shape3D] = []
 var cabin_boxes: Array[AABB] = []
+var landmark_meshes: Array[Mesh] = []  # LANDMARK_FILES order, then the windmill's sails
+var landmark_shapes: Array[Shape3D] = []  # trimesh per Landmark
+var feature_meshes: Array[Mesh] = []  # FEATURE_FILES order
+var feature_shapes: Array[Shape3D] = []
+var roofed_landmarks: Array[Mesh] = []  # surface 1 is a roof that snows (seasons.gd): windmill, chapel, well
 # Village street lamps: dark pole + lantern (lit at night), a shadow-casting OmniLight each in full zones.
 var lamp_meshes: Array[ArrayMesh] = []
 var lamp_glass := StandardMaterial3D.new()
@@ -178,14 +281,19 @@ var prop_centres: Array[Vector3] = []
 var cat_meshes: Array[ArrayMesh] = []  # per CatPose; surface 0 = coat (cat_mat), 1 = eyes, 2 = nose
 var cat_mat := ShaderMaterial.new()
 var cat_coats: Array = seasons.colours(seasons.palette.cats)
+var life := preload("res://life.gd").new()  # smoke, lit windows, laundry, forges, flocks
 # Memoised village sites / villages / roads (pure functions of the seed), shared by worker threads.
 var _sites := {}
 var _villages := {}
 var _roads := {}
 var _cabins := {}
+var _landmarks := {}
+var _stretched := {}  # Vector2i(Landmark, scale %) -> trimesh (main thread only)
 var _memo_lock := Mutex.new()
 var player: CharacterBody3D
 var hud := Label.new()
+var place := Label.new()  # top centre: the village or landmark the player is at (_update_place)
+var _place_at := Vector3.INF  # where _update_place last looked
 var fps := Label.new()  # bottom right: frames per second (engine's 1 s average) and visible polygons
 
 
@@ -242,6 +350,22 @@ func _init() -> void:
 			cabin_meshes.append(m)
 			cabin_shapes.append(m.create_trimesh_shape())
 			cabin_boxes.append(m.get_aabb())
+	for file in LANDMARK_FILES + ["windmill_sails"]:
+		landmark_meshes.append(_load_mesh("res://assets/landmarks/%s.glb" % file))
+	for k in Landmark.size():
+		landmark_shapes.append(landmark_meshes[k].create_trimesh_shape())
+	var sails := landmark_meshes[Landmark.size()]
+	for s in sails.get_surface_count():
+		var mat := ShaderMaterial.new()
+		mat.shader = Shader.new()
+		mat.shader.code = SAILS_SHADER
+		mat.set_shader_parameter("albedo", (sails.surface_get_material(s) as StandardMaterial3D).albedo_color)
+		sails.surface_set_material(s, mat)
+	for file in FEATURE_FILES:
+		var m := _load_mesh("res://assets/landmarks/%s.glb" % file)
+		feature_meshes.append(m)
+		feature_shapes.append(m.create_trimesh_shape())
+	roofed_landmarks = [landmark_meshes[Landmark.WINDMILL], landmark_meshes[Landmark.CHAPEL], feature_meshes[Feature.WELL]]
 	_make_lamp()
 	_make_props()
 	cat_mat.shader = Shader.new()
@@ -254,6 +378,9 @@ func _init() -> void:
 		cat_meshes.append(m)
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
+	life.world = self
+	life.setup()
+	add_child(life)
 
 
 ## Models carry their baked shading (tools/make_trees.py bake_shade) as sRGB vertex colours, which
@@ -286,12 +413,20 @@ func _ready() -> void:
 	add_child(weather)
 	add_child(preload("res://birds.gd").new())  # finds the world as its parent
 	add_child(preload("res://clouds.gd").new())  # same
+	add_child(preload("res://ambience.gd").new())  # same
 	var layer := CanvasLayer.new()
 	var map := preload("res://map.gd").new()
 	map.world = self
 	layer.add_child(map)
 	hud.position = Vector2(12, 12)
 	layer.add_child(hud)
+	place.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 48)
+	place.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	place.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	place.add_theme_font_size_override("font_size", 30)
+	place.add_theme_constant_override("outline_size", 8)
+	place.add_theme_color_override("font_outline_color", Color(0.24, 0.21, 0.22, 0.6))
+	layer.add_child(place)
 	fps.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 12)
 	fps.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	fps.grow_vertical = Control.GROW_DIRECTION_BEGIN
@@ -562,7 +697,55 @@ func _village(g: Vector2i) -> Dictionary:
 		var b: Array = free_benches.pop_at(cat_rng.randi() % free_benches.size())
 		cats.append([b[0], b[1], cat_rng.randi() % CatPose.size(), cat_rng.randi() % cat_coats.size(),
 			cat_rng.randf_range(-CAT_SLIDE, CAT_SLIDE)])
-	return {"centre": c, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats}
+	# Particularity, from its own dice too: a well or fountain in the middle of the square (where the
+	# roads end), or market stalls between the roads, all three colours before any repeats.
+	var feature := hash(site.seed + 7) % Feature.size()
+	var square := []  # [world position on the ground, yaw, FEATURE_FILES index]
+	if feature == Feature.MARKET:
+		var first := hash(site.seed + 8) % 8
+		for i in 8:
+			var a := TAU * (first + i * 3) / 8.0  # every eighth, in a scattered order
+			var p := c + Vector2.from_angle(a) * STALL_RADIUS
+			if square.size() < 3 and not _near_line(p, roads, ROAD_HALF + 0.9) and _far_from(p, square, 3.6):
+				square.append([Vector3(p.x, height(p.x, p.y), p.y), atan2(c.x - p.x, c.y - p.y), 2 + square.size()])
+	else:
+		square.append([Vector3(c.x, height(c.x, c.y) - 0.05, c.y), TAU * (hash(site.seed + 8) % 8) / 8.0, feature])
+	var lake := false  # water within ~200 m: the name may end in "-sur-Lac"
+	for i in 16:
+		var q := c + Vector2.from_angle(TAU * i / 16.0) * (120.0 if i % 2 else 200.0)
+		lake = lake or height(q.x, q.y) < WATER_LEVEL
+	return {"centre": c, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats,
+		"feature": feature, "square": square, "name": _place_name(site.seed, lake)}
+
+
+## A village name from `seed`: a stem (start, vowel, consonants, ending) alone, or "Saint-…", "Le Puy-…",
+## "Val-…", "Mont…", "…-le-Haut", "La …" (feminine endings) or "…-sur-Lac" when `lake`.
+func _place_name(seed: int, lake := false) -> String:
+	var h := hash(seed + 11)
+	var stem := _stem(h)
+	match (h >> 20) % 10:
+		0: return "Saint-%s-%s" % [SAINTS[(h >> 24) % SAINTS.size()], ["d'en-Haut", "le-Vieux", "des-Prés", "du-Bois"][(h >> 28) % 4]]
+		1: return "%s-sur-Lac" % stem if lake else "Le Puy-%s" % stem
+		2: return "Val-%s" % stem
+		3: return "Mont" + stem.to_lower()
+		4: return "%s-le-%s" % [stem, "Haut" if (h >> 24) % 2 else "Bas"]
+		5: return ("La " + stem) if stem.ends_with("e") else stem
+	return stem
+
+
+## Stem of a place name from the low bits of `h`.
+static func _stem(h: int) -> String:
+	return NAME_START[h % NAME_START.size()] + NAME_VOWEL[(h >> 5) % NAME_VOWEL.size()] \
+		+ NAME_CONS[(h >> 8) % NAME_CONS.size()] + NAME_END[(h >> 12) % NAME_END.size()]
+
+
+## "de X" with French elision and contraction: "d'Arnac", "du Puy-…", "de la …".
+static func _of(n: String) -> String:
+	if n.begins_with("Le "):
+		return "du " + n.substr(3)
+	if n.begins_with("La "):
+		return "de la " + n.substr(3)
+	return ("d'" if n[0] in "AEIOUÉ" else "de ") + n
 
 
 ## True if `p` (world x/z) is at least `r` from every [world position, …] of `things`.
@@ -730,6 +913,244 @@ func _roads_near(p: Vector2, r: float) -> Array:
 	return out
 
 
+## Landmark of the LANDMARK_GRID square `g`, or {} when no kind fits its terrain: {"kind": Landmark,
+## "pos": world position (foot), "yaw", "name"}. Pure function of the seed, like village_site.
+func landmark_site(g: Vector2i) -> Dictionary:
+	return _memo(_landmarks, g, _landmark_site.bind(g))
+
+
+func _landmark_site(g: Vector2i) -> Dictionary:
+	var h := hash(Vector3i(noise.seed + 8, g.x, g.y))
+	var inner := Rect2(Vector2(g) * LANDMARK_GRID, Vector2.ONE * LANDMARK_GRID).grow(-LANDMARK_MARGIN)
+	var roads := _roads_near(inner.get_center(), LANDMARK_GRID * 0.75)
+	var finders := [_tower_site, _windmill_site, _bridge_site, _chapel_site, _stones_site]  # Landmark order
+	# A lake neck is rare enough to always get its bridge; the other kinds in a shuffled order per square.
+	var order := [Landmark.TOWER, Landmark.WINDMILL, Landmark.CHAPEL, Landmark.STONES]
+	order.sort_custom(func(a, b): return hash(h + a * 7919) < hash(h + b * 7919))
+	for kind: int in [Landmark.BRIDGE] + order:
+		var rng := RandomNumberGenerator.new()
+		rng.seed = hash(h + kind)
+		var site: Dictionary = finders[kind].call(inner, rng, roads)
+		if site.is_empty():
+			continue
+		site.kind = kind
+		var stem := _stem(hash(h + 12))
+		match kind:
+			Landmark.TOWER: site.name = "Tour " + _of(stem)
+			Landmark.WINDMILL: site.name = "Moulin " + _of(village(site.village).name)
+			Landmark.BRIDGE: site.name = "Pont " + _of(stem)
+			Landmark.CHAPEL: site.name = "Chapelle Saint-" + SAINTS[(h >> 8) % SAINTS.size()]
+			Landmark.STONES: site.name = "Pierres " + _of(stem)
+		return site
+	return {}
+
+
+## Lowest (x) and highest (y) ground at `p` and at 8 points `r` m round it.
+func _ground_range(p: Vector2, r: float) -> Vector2:
+	var lo := height(p.x, p.y)
+	var hi := lo
+	for i in 8:
+		var q := p + Vector2.from_angle(TAU * i / 8.0) * r
+		var h := height(q.x, q.y)
+		lo = minf(lo, h)
+		hi = maxf(hi, h)
+	return Vector2(lo, hi)
+
+
+## Yaw turning a model's front (+Z) downhill at `p` (any yaw on flat ground).
+func _downhill_yaw(p: Vector2) -> float:
+	var f := Vector2(height(p.x - 2.0, p.y) - height(p.x + 2.0, p.y), height(p.x, p.y - 2.0) - height(p.x, p.y + 2.0))
+	return atan2(f.x, f.y)
+
+
+## True when nothing man-made is within `r` m of `p`: roads (from `roads`), cabins, and village centres
+## within `gap` m.
+func _landmark_clear(p: Vector2, r: float, roads: Array, gap: float) -> bool:
+	if _near_line(p, roads, r + ROAD_HALF + 2.0):
+		return false
+	for gx in range(floori((p.x - gap) / VILLAGE_GRID), floori((p.x + gap) / VILLAGE_GRID) + 1):
+		for gz in range(floori((p.y - gap) / VILLAGE_GRID), floori((p.y + gap) / VILLAGE_GRID) + 1):
+			var v := village_site(Vector2i(gx, gz))
+			if not v.is_empty() and v.centre.distance_to(p) < gap:
+				return false
+	var reach := r + CABIN_CLEAR + 20.0  # a pier reaches ~12 m from its origin
+	for gx in range(floori((p.x - reach) / CABIN_GRID), floori((p.x + reach) / CABIN_GRID) + 1):
+		for gz in range(floori((p.y - reach) / CABIN_GRID), floori((p.y + reach) / CABIN_GRID) + 1):
+			var cs := cabin_site(Vector2i(gx, gz))
+			if not cs.is_empty() and (Vector2(cs.cabin[0].x, cs.cabin[0].z).distance_to(p) < reach
+					or Vector2(cs.pier[0].x, cs.pier[0].z).distance_to(p) < reach):
+				return false
+	return true
+
+
+## Ruined tower: on the highest ground of the square (hills or mountains), climbed to its local top,
+## where the ground within 9 m stays close to the foot (its fallen blocks lie there).
+func _tower_site(inner: Rect2, _rng: RandomNumberGenerator, roads: Array) -> Dictionary:
+	var cands := []
+	for i in 14:
+		for j in 14:
+			var p := inner.position + (Vector2(i, j) + Vector2.ONE * 0.5) / 14.0 * inner.size
+			cands.append([height(p.x, p.y), p])
+	cands.sort()
+	cands.reverse()
+	for cand in cands.slice(0, 24):
+		var p: Vector2 = cand[1]
+		if cand[0] < 14.0 or hilliness(p.x, p.y) < 0.3:
+			break
+		for k in 8:  # climb in 6 m steps
+			var top := p
+			for d in 8:
+				var q := p + Vector2.from_angle(TAU * d / 8.0) * 6.0
+				if height(q.x, q.y) > height(top.x, top.y):
+					top = q
+			if top == p:
+				break
+			p = top
+		# Foot at the lowest of its ring; the summit inside it may stand up to 3 m higher (the foot and the
+		# wall stub go 3 m down, the ground inside a ruin is rubble anyway).
+		var near := _ground_range(p, 4.5)
+		var y := near.x - 0.2
+		if not inner.has_point(p) or near.y - y > 3.0 or _ground_range(p, 7.2).x < y - 2.0 \
+				or not _landmark_clear(p, LANDMARK_CLEAR[Landmark.TOWER], roads, VILLAGE_REACH + 12.0):
+			continue
+		# Fallen stones further out: rocks lying on the ground, tilted to it (added to full zones' rocks).
+		var rubble := []  # [world position, yaw, rock kind, scale]
+		var rr := RandomNumberGenerator.new()
+		rr.seed = hash(Vector2i(roundi(p.x), roundi(p.y)))
+		for i in 12:
+			var q := p + Vector2.from_angle(rr.randf() * TAU) * rr.randf_range(5.8, 11.0)
+			var yaw := rr.randf() * TAU
+			var kind: int = [0, 1, 4, 1][rr.randi() % 4]  # boulder, slab, cluster
+			var s := rr.randf_range(0.45, 0.85)
+			if height(q.x, q.y) > WATER_LEVEL + 0.3:
+				rubble.append([Vector3(q.x, height(q.x, q.y), q.y), yaw, kind, s])
+		return {"pos": Vector3(p.x, y, p.y), "yaw": _downhill_yaw(p), "rubble": rubble}
+	return {}
+
+
+## Windmill: on the highest of a few flat dry meadow spots 80-130 m from a village (outside its
+## clearing, off its roads), sails facing the village.
+func _windmill_site(inner: Rect2, rng: RandomNumberGenerator, roads: Array) -> Dictionary:
+	var best := {}
+	var best_h := -INF
+	for gx in range(floori((inner.position.x - 130.0) / VILLAGE_GRID), floori((inner.end.x + 130.0) / VILLAGE_GRID) + 1):
+		for gz in range(floori((inner.position.y - 130.0) / VILLAGE_GRID), floori((inner.end.y + 130.0) / VILLAGE_GRID) + 1):
+			var v := village_site(Vector2i(gx, gz))
+			if v.is_empty():
+				continue
+			for i in 16:
+				var p: Vector2 = v.centre + Vector2.from_angle(rng.randf() * TAU) * rng.randf_range(80.0, 130.0)
+				var r := _ground_range(p, 4.0)
+				var h := height(p.x, p.y)
+				if not inner.has_point(p) or r.x < WATER_LEVEL + 1.0 or r.y - r.x > 0.9 or h <= best_h or forest(p.x, p.y) > LANDMARK_OPEN \
+						or not _landmark_clear(p, LANDMARK_CLEAR[Landmark.WINDMILL], roads, VILLAGE_REACH + 9.0):
+					continue
+				var to_v: Vector2 = v.centre - p
+				best = {"pos": Vector3(p.x, r.x - 0.1, p.y), "yaw": atan2(to_v.x, to_v.y), "village": Vector2i(gx, gz)}
+				best_h = h
+	return best
+
+
+## Top of the bridge's deck `s` m from mid-span along its X (tools/make_landmarks.py deck()).
+static func bridge_deck(s: float) -> float:
+	if absf(s) <= 13.0:
+		return 0.6 + 2.5 * (1.0 - (s / 13.0) ** 2)
+	return 0.6 - 0.8 * (absf(s) - 13.0) / (BRIDGE_END - 13.0)
+
+
+## Stone bridge across a lake neck: from a shoreline point, straight out across the water to the
+## opposite bank within 28 m; its middle over water with water on both sides (a channel, not a bay),
+## both ramps ending on the banks, the ground everywhere below the deck. There are no rivers (a stream
+## would have to be carved into height(), which villages, roads, shores and cabins all derive from):
+## necks of the lakes stand in for them.
+func _bridge_site(inner: Rect2, rng: RandomNumberGenerator, roads: Array) -> Dictionary:
+	for i in 96:
+		var p := inner.position + Vector2(rng.randf(), rng.randf()) * inner.size
+		var grad := Vector2.ZERO
+		for j in 6:  # Newton steps onto the shoreline, as in _cabin_site
+			grad = Vector2(height(p.x + 0.5, p.y) - height(p.x - 0.5, p.y), height(p.x, p.y + 0.5) - height(p.x, p.y - 0.5))
+			if grad.length_squared() < 1e-4:
+				break
+			p -= (grad * (height(p.x, p.y) - WATER_LEVEL) / grad.length_squared()).limit_length(40.0)
+		if absf(height(p.x, p.y) - WATER_LEVEL) > 0.1 or grad.length_squared() < 1e-4:
+			continue
+		var d := -grad.normalized()  # out over the water
+		var b := 2.0
+		while b < 28.0 and height(p.x + d.x * b, p.y + d.y * b) < WATER_LEVEL + 0.3:
+			b += 2.0
+		if b < 6.0 or b >= 28.0:
+			continue
+		# Stretched or squeezed along its length so the deck's ends (±13 m) rest ~2.5 m onto the banks.
+		var c := p + d * (b / 2.0)
+		var sx := snappedf(clampf((b / 2.0 + 2.5) / 13.0, 0.6, 1.2), 0.05)
+		var at := func(s: float, w: float) -> float:
+			var q: Vector2 = c + d * s * sx + d.orthogonal() * w
+			return height(q.x, q.y) - WATER_LEVEL
+		if not inner.has_point(c) or at.call(0.0, 0.0) > -0.1 or at.call(0.0, 6.0) > -0.1 or at.call(0.0, -6.0) > -0.1:
+			continue
+		# Foot above the water (e): on the lower bank, raised until the deck clears the ground by 0.35 m.
+		var e := minf(at.call(-14.5, 0.0), at.call(14.5, 0.0)) - 0.15
+		for s in range(-12, 13, 2):
+			for w in [-1.7, 0.0, 1.7]:
+				e = maxf(e, at.call(s, w) - bridge_deck(s) + 0.35)
+		# Ramps on the banks: at most 0.8 m above the ground, buried at most 0.4 m (parapets: 0.74 m).
+		var ok: bool = e >= 0.0 and e < 2.0 and at.call(-13.5, 0.0) > 0.1 and at.call(13.5, 0.0) > 0.1
+		for s in [-14.5, -13.0, 13.0, 14.5]:
+			for w in [-1.6, 1.6]:
+				var g: float = at.call(s, w) - e
+				ok = ok and g > bridge_deck(s) - 0.8 and g < bridge_deck(s) + 0.4
+		if ok and _landmark_clear(c, BRIDGE_END * sx + 2.0, roads, VILLAGE_REACH + BRIDGE_END):
+			return {"pos": Vector3(c.x, WATER_LEVEL + e, c.y), "yaw": atan2(-d.y, d.x), "scale": sx}
+	return {}
+
+
+## The landmark's transform (world): turned by its yaw, a bridge stretched along its X by its scale.
+static func landmark_transform(ls: Dictionary) -> Transform3D:
+	return Transform3D(Basis(Vector3.UP, ls.yaw) * Basis.from_scale(Vector3(ls.get("scale", 1.0), 1.0, 1.0)), ls.pos)
+
+
+## Trimesh of landmark `kind` stretched by `sx` along X (bridges; physics shapes can't take a
+## non-uniform scale), made once per scale.
+func _stretched_shape(kind: int, sx: float) -> Shape3D:
+	var key := Vector2i(kind, roundi(sx * 100.0))
+	if not _stretched.has(key):
+		var faces: PackedVector3Array = (landmark_shapes[kind] as ConcavePolygonShape3D).get_faces()
+		for i in faces.size():
+			faces[i].x *= sx
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(faces)
+		_stretched[key] = shape
+	return _stretched[key]
+
+
+## Isolated chapel: the highest of a few flat dry spots 250 m or more from every village, door downhill.
+func _chapel_site(inner: Rect2, rng: RandomNumberGenerator, roads: Array) -> Dictionary:
+	return _highest_flat(inner, rng, roads, Landmark.CHAPEL, 6.0, 1.0, 250.0)
+
+
+## Standing stones: the highest of a few flat dry spots (the ring and its outlier, 9.5 m), away from villages.
+func _stones_site(inner: Rect2, rng: RandomNumberGenerator, roads: Array) -> Dictionary:
+	return _highest_flat(inner, rng, roads, Landmark.STONES, 9.5, 0.8, VILLAGE_REACH + 12.0)
+
+
+## The highest of 40 random spots in `inner`, in a meadow, whose ground within `r` m is dry and varies
+## by at most `dh` m, clear of roads, cabins and village centres within `gap` m. Front downhill.
+func _highest_flat(inner: Rect2, rng: RandomNumberGenerator, roads: Array, kind: Landmark, r: float, dh: float, gap: float) -> Dictionary:
+	var best := {}
+	var best_h := -INF
+	for i in 40:
+		var p := inner.position + Vector2(rng.randf(), rng.randf()) * inner.size
+		var h := height(p.x, p.y)
+		if h <= best_h or h < WATER_LEVEL + 1.5 or forest(p.x, p.y) > LANDMARK_OPEN:
+			continue
+		var g := _ground_range(p, r)
+		if g.x < WATER_LEVEL + 1.0 or g.y - g.x > dh or not _landmark_clear(p, LANDMARK_CLEAR[kind], roads, gap):
+			continue
+		best = {"pos": Vector3(p.x, g.x - 0.1, p.y), "yaw": _downhill_yaw(p)}
+		best_h = h
+	return best
+
+
 ## Everything man-made touching zone `cell`: the roads/houses mask (per terrain vertex: FREE, CLEAR,
 ## ROAD), the zone's houses per kind (zone-local transforms) and the houses near it. Thread-safe.
 func layout(cell: Vector2i) -> Dictionary:
@@ -751,6 +1172,9 @@ func layout(cell: Vector2i) -> Dictionary:
 	var cats := []  # per CatPose: [transforms, coat colours]
 	for k in CatPose.size():
 		cats.append([[] as Array[Transform3D], []])
+	var features := []  # per FEATURE_FILES model
+	for k in FEATURE_FILES.size():
+		features.append([] as Array[Transform3D])
 	var near := []  # every house of the villages around, even across the edge: [world position, yaw, kind]
 	var reach := half + ROAD_MAX + VILLAGE_GRID  # a road touching this zone starts within this range
 	var lo := Vector2i(((origin - Vector2.ONE * reach) / VILLAGE_GRID).floor())
@@ -805,6 +1229,9 @@ func layout(cell: Vector2i) -> Dictionary:
 					var rot := Basis(Vector3.UP, cat[1])
 					cats[cat[2]][0].append(Transform3D(rot, bl + rot * Vector3(cat[4], SEAT_TOP, SEAT_FRONT)))
 					cats[cat[2]][1].append(cat_coats[cat[3]])
+			for it in v.square:  # in the zone holding its origin
+				if cell_of(it[0]) == cell:
+					features[it[2]].append(Transform3D(Basis(Vector3.UP, it[1]), it[0] - Vector3(origin.x, 0, origin.y)))
 	var cabins := []  # per cabin_meshes entry (cabins, then piers), zone-local; each in the zone holding its origin
 	for k in CABIN_KINDS * 2:
 		cabins.append([] as Array[Transform3D])
@@ -821,8 +1248,32 @@ func layout(cell: Vector2i) -> Dictionary:
 				var it: Array = cs.cabin if j == 0 else cs.pier
 				if cell_of(it[0]) == cell:
 					cabins[j * CABIN_KINDS + cs.kind].append(Transform3D(Basis(Vector3.UP, it[1]), it[0] - Vector3(origin.x, 0, origin.y)))
+	var marks := []  # per landmark_meshes entry (the windmill's sails last), zone-local; in the zone holding the origin
+	for k in landmark_meshes.size():
+		marks.append([] as Array[Transform3D])
+	var rubble := []  # per rock kind: the towers' fallen stones (full zones add them to their rocks)
+	for k in ROCK_KINDS:
+		rubble.append([] as Array[Transform3D])
+	var reach_l := half + BRIDGE_END + 4.0  # the farthest a landmark's clearing reaches from its origin
+	for gx in range(floori((origin.x - reach_l) / LANDMARK_GRID), floori((origin.x + reach_l) / LANDMARK_GRID) + 1):
+		for gz in range(floori((origin.y - reach_l) / LANDMARK_GRID), floori((origin.y + reach_l) / LANDMARK_GRID) + 1):
+			var ls := landmark_site(Vector2i(gx, gz))
+			if ls.is_empty():
+				continue
+			var lp := Vector2(ls.pos.x, ls.pos.z) - origin
+			var along: Vector2 = Vector2(cos(ls.yaw), -sin(ls.yaw)) * (BRIDGE_END * ls.scale if ls.kind == Landmark.BRIDGE else 0.0)
+			_mark_segment(mask, lp - along, lp + along, -1.0, LANDMARK_CLEAR[ls.kind])
+			if cell_of(ls.pos) == cell:
+				var t := landmark_transform(ls).translated(-Vector3(origin.x, 0, origin.y))
+				marks[ls.kind].append(t)
+				if ls.kind == Landmark.WINDMILL:
+					marks[Landmark.size()].append(t.translated_local(WINDMILL_HUB))
+			for r in ls.get("rubble", []):
+				if cell_of(r[0]) == cell:
+					var tilt := Basis(Quaternion(Vector3.UP, _normal(r[0].x, r[0].z)))
+					rubble[r[2]].append(Transform3D((tilt * Basis(Vector3.UP, r[1])).scaled(Vector3.ONE * r[3]), r[0] - Vector3(origin.x, 0, origin.y)))
 	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats, "near_houses": near,
-		"cabins": cabins}
+		"cabins": cabins, "landmarks": marks, "features": features, "rubble": rubble, "life": life.zone_layout(cell, mask)}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -1068,6 +1519,33 @@ func _process(_delta: float) -> void:
 	# Triangles drawn by the camera pass (shadow passes excluded).
 	var tris := get_viewport().get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE, Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)
 	fps.text = "%d FPS · %.1f ms · %.2f M polygones" % [f, 1000.0 / maxf(f, 1.0), tris / 1e6]
+	_update_place()
+
+
+## Top-centre title: the landmark within PLACE_DIST / 2 of the player, else the nearest village
+## (name, particularity) within PLACE_DIST. Looked up again every 4 m walked.
+func _update_place() -> void:
+	var p := player.global_position
+	if p.distance_to(_place_at) < 4.0:
+		return
+	_place_at = p
+	var q := Vector2(p.x, p.z)
+	# A landmark within PLACE_DIST / 2 (< LANDMARK_MARGIN) is always in the player's own square.
+	var ls := landmark_site(Vector2i((q / LANDMARK_GRID).floor()))
+	if not ls.is_empty() and Vector2(ls.pos.x, ls.pos.z).distance_to(q) < PLACE_DIST / 2.0:
+		place.text = "%s\n%s" % [ls.name, LANDMARK_NAMES[ls.kind].to_lower()]
+		return
+	var text := ""
+	var best := PLACE_DIST
+	var vg := Vector2i((q / VILLAGE_GRID).floor())
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var s := village_site(vg + Vector2i(dx, dz))
+			if not s.is_empty() and s.centre.distance_to(q) < best:
+				best = s.centre.distance_to(q)
+				var v := village(vg + Vector2i(dx, dz))
+				text = "%s\nvillage · %s" % [v.name, FEATURE_NAMES[v.feature]]
+	place.text = text
 
 
 func _physics_process(_delta: float) -> void:
@@ -1142,6 +1620,8 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 			min_h = minf(min_h, h)
 	var trees := tree_transforms(cell, mask)
 	var rocks := rock_transforms(cell, mask) if full else []
+	for k in rocks.size():
+		rocks[k].append_array(lay.rubble[k])
 	var bushes := bush_transforms(cell, mask) if full else []
 	# Tree shade across zone edges (~1 ms): not worth it on the coarse 4 m grid, a kilometre away.
 	var tree_shade := [trees, 2.8] if detail == Detail.COARSE else [trees + [_edge_trees(cell, mask)], 2.8, true]
@@ -1177,9 +1657,9 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 		flw[k].append_array(lay.flowers[k])  # village beds share the wild flowers' MultiMesh
 	return {"cell": cell, "density": dens, "detail": detail, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
 		"rocks": rocks, "flowers": flw, "houses": lay.houses, "cabins": lay.cabins,
-		"bushes": bushes,
+		"bushes": bushes, "landmarks": lay.landmarks, "features": lay.features,
 		"lamps": lay.lamps if full else ([] as Array[Transform3D]), "props": lay.props if full else [],
-		"cats": lay.cats if full else [],
+		"cats": lay.cats if full else [], "life": lay.life if full else {},
 		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses + lay.cabins.slice(0, CABIN_KINDS), mask, res)}
 
 
@@ -1288,12 +1768,13 @@ func _attach_zone(d: Dictionary) -> void:
 		var list: Array[Transform3D] = all_houses[kind]
 		if list.is_empty():
 			continue
-		zone.add_child(_multimesh(house_meshes[kind], list))
+		zone.add_child(_multimesh(house_meshes[kind], list, PackedColorArray(), life.house_dice(zone.position, list)))
 		for t in list if body else []:
 			var hcs := CollisionShape3D.new()
 			hcs.shape = house_shapes[kind]
 			hcs.transform = t * Transform3D(Basis(), house_centres[kind])
 			body.add_child(hcs)
+	life.attach(zone, d, body)  # chimney smoke; laundry, forges and flocks in full zones
 
 	var all_cabins: Array = d.cabins  # cabins, then piers (collision: their trimesh)
 	for k in all_cabins.size():
@@ -1306,6 +1787,21 @@ func _attach_zone(d: Dictionary) -> void:
 			ccs.shape = cabin_shapes[k]
 			ccs.transform = t
 			body.add_child(ccs)
+
+	# Landmarks and the squares' features: every detail level (seen from afar), trimesh collision in
+	# full zones; the sails turn in their shader and have none.
+	for group in [[d.landmarks, landmark_meshes, landmark_shapes], [d.features, feature_meshes, feature_shapes]]:
+		for k in group[0].size():
+			var list: Array[Transform3D] = group[0][k]
+			if list.is_empty():
+				continue
+			zone.add_child(_multimesh(group[1][k], list))
+			for t in list if body and k < group[2].size() else []:
+				var lcs := CollisionShape3D.new()
+				var sx := t.basis.x.length()  # bridges are stretched along X
+				lcs.shape = group[2][k] if is_equal_approx(sx, 1.0) else _stretched_shape(k, sx)
+				lcs.transform = t.orthonormalized()
+				body.add_child(lcs)
 
 	var lamps: Array[Transform3D] = d.lamps
 	if not lamps.is_empty():
@@ -1409,17 +1905,22 @@ static func _step(v: float, step: float, lo: float, hi: float) -> float:
 	return lo if n > hi + 0.001 else (hi if n < lo - 0.001 else n)
 
 
-## One draw call for every instance of `mesh` in a zone; `colors` (optional) tints each instance.
-func _multimesh(mesh: Mesh, transforms: Array[Transform3D], colors := PackedColorArray()) -> MultiMeshInstance3D:
+## One draw call for every instance of `mesh` in a zone; `colors` (optional) tints each instance,
+## `custom` (optional) is its INSTANCE_CUSTOM in shaders.
+func _multimesh(mesh: Mesh, transforms: Array[Transform3D], colors := PackedColorArray(), custom := PackedColorArray()) -> MultiMeshInstance3D:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = not colors.is_empty()
+	# Compatibility reads custom data without colours as a black instance colour: white ones go with it.
+	mm.use_colors = not colors.is_empty() or not custom.is_empty()
+	mm.use_custom_data = not custom.is_empty()
 	mm.mesh = mesh
 	mm.instance_count = transforms.size()
 	for i in transforms.size():
 		mm.set_instance_transform(i, transforms[i])
 		if mm.use_colors:
-			mm.set_instance_color(i, colors[i])
+			mm.set_instance_color(i, colors[i] if not colors.is_empty() else Color.WHITE)
+		if mm.use_custom_data:
+			mm.set_instance_custom_data(i, custom[i])
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	return mmi
@@ -1614,6 +2115,13 @@ void sky() {
 		return get_shader_parameter(p) if p in PARAMS else null
 
 
+## Colour-correction curve stops (dark, mid, light) for the renderer: Compatibility gets COMPAT_GRADE
+## of their bend away from the identity curve.
+static func grade_stops(stops: Array, compat: bool) -> Array:
+	var k := COMPAT_GRADE if compat else 1.0
+	return [0, 1, 2].map(func(i): return Color(i * 0.5, i * 0.5, i * 0.5).lerp(stops[i], k))
+
+
 func _setup_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
@@ -1646,17 +2154,45 @@ func _setup_environment() -> void:
 		env.ambient_light_energy = COMPAT_AMBIENT
 		env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	# Filmic look: AgX keeps bright warm light from going flat yellow, then a gentle grade lifts the
-	# shadows towards blue and warms the highlights (per-channel curves).
+	# shadows towards blue and warms the highlights (per-channel curves). daynight.gd re-tints the curve
+	# by the hour (grade()); Compatibility applies it far stronger, so it gets a share of the bend only.
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_agx_contrast = COMPAT_AGX_CONTRAST if compat else AGX_CONTRAST
 	env.adjustment_enabled = true
 	env.adjustment_saturation = GRADE_SATURATION
-	if not compat:  # Compatibility applies the curves far stronger (snow turned beige): saturation only there
-		var curve := Gradient.new()
-		curve.offsets = PackedFloat32Array([0.0, 0.5, 1.0])
-		curve.colors = PackedColorArray(GRADE)
-		env.adjustment_color_correction = GradientTexture1D.new()
-		env.adjustment_color_correction.gradient = curve
+	var curve := Gradient.new()
+	curve.offsets = PackedFloat32Array([0.0, 0.5, 1.0])
+	curve.colors = PackedColorArray(grade_stops(GRADE, compat))
+	env.adjustment_color_correction = GradientTexture1D.new()
+	env.adjustment_color_correction.gradient = curve
+	env.glow_enabled = true
+	env.glow_intensity = GLOW
+	env.glow_bloom = 0.0
+	env.glow_hdr_threshold = COMPAT_GLOW_THRESHOLD if compat else GLOW_THRESHOLD
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
+	for i in 7:  # wide, soft halo rather than a tight bright rim
+		env.set_glow_level(i, [0.0, 0.0, 1.0, 1.0, 0.6, 0.0, 0.0][i])
+	if not compat:
+		env.ssao_enabled = SSAO
+		env.ssao_radius = 1.5
+		env.ssao_intensity = 1.2
+		env.ssao_power = 1.5
+		env.volumetric_fog_density = 0.0  # daynight.gd turns it on while the sun is low
+		env.volumetric_fog_anisotropy = 0.7  # light scattered forwards: shafts read looking towards the sun
+		env.volumetric_fog_length = 80.0
+		env.volumetric_fog_ambient_inject = 0.0  # sunlight only, so the canopy's shadows carve the shafts
+		env.volumetric_fog_sky_affect = 0.0
+		# Cheaper than the defaults (medium SSAO, 64³ froxels): both stay soft by design.
+		RenderingServer.environment_set_ssao_quality(RenderingServer.ENV_SSAO_QUALITY_LOW, true, 0.5, 2, 50.0, 300.0)
+		RenderingServer.environment_set_volumetric_fog_volume_size(48, 48)
+	mist.mesh = QuadMesh.new()
+	mist_mat.shader = Shader.new()
+	mist_mat.shader.code = MIST_SHADER
+	mist_mat.render_priority = 100  # over water and particles
+	mist.material_override = mist_mat
+	mist.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mist.extra_cull_margin = 16384.0  # never culled: the vertex shader puts it on the whole screen
+	add_child(mist)
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)

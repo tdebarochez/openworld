@@ -122,10 +122,11 @@ def build(name, fn, seed, grey, moss=None):
     export(obj, os.path.join(OUT, name + ".glb"))
 
 
-bpy.ops.wm.read_factory_settings(use_empty=True)
-os.makedirs(OUT, exist_ok=True)
-build("rock_0", boulder, 10, "stone", "leaf")
-build("rock_1", slab, 11, "stone", "leaf")
-build("rock_2", standing, 12, "stone")
-build("rock_3", pebble, 13, "stone")
-build("rock_4", cluster, 14, "stone", "leaf")
+if __name__ == "__main__":  # tools/make_landmarks.py imports stone()
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    os.makedirs(OUT, exist_ok=True)
+    build("rock_0", boulder, 10, "stone", "leaf")
+    build("rock_1", slab, 11, "stone", "leaf")
+    build("rock_2", standing, 12, "stone")
+    build("rock_3", pebble, 13, "stone")
+    build("rock_4", cluster, 14, "stone", "leaf")
