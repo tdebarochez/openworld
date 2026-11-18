@@ -4,6 +4,11 @@ extends Node3D
 
 const ZONE_SIZE := 128  # metres per side; 1 m grid so HeightMapShape3D needs no scaling
 const WATER_LEVEL := 0.0
+const MOUNTAIN := 34.0  # m added on the highest hills (height()): ~65 m summits instead of ~32
+const MOUNTAIN_FROM := 0.05  # broad-noise values over which that rise ramps in: above every shore,
+const MOUNTAIN_TOP := 0.7  # and as wide as that allows, for gentler flanks
+const TREE_LINE := 40.0  # m: no trees or bushes above; only conifers above 70 % of it
+const SNOW_LINE := 44.0  # m: peak ground (snow) above
 const VIEW_DIST := 200.0  # default view distance: zones closer than this get generated; fog is fully opaque here
 # P / O step the view distance and the density (multiplier of tree/rock/flower attempts) up,
 # Shift+P / Shift+O down, wrapping around at both ends.
@@ -93,6 +98,7 @@ var map_tiles := {}  # Vector2i -> Image, top-down view of each generated zone
 var jobs := {}  # Vector2i -> {task: int, data: Dictionary} for zones being built on a worker thread
 var threaded := OS.has_feature("threads")  # false in the web export (no-threads build)
 var noise := FastNoiseLite.new()
+var broad := FastNoiseLite.new()  # `noise` without its fine octaves: the hills' large shape (mountains)
 var seasons := preload("res://seasons.gd").new()
 var terrain_mat: ShaderMaterial = seasons.terrain_mat  # recolours the vertex colours per season
 var ground: Array = seasons.GROUND[seasons.Season.SUMMER]  # sand, rock, peak, grass, road: baked into the terrain
@@ -137,6 +143,9 @@ func _init() -> void:
 	noise.seed = 1337
 	noise.frequency = 0.004
 	noise.fractal_octaves = 5
+	broad.seed = noise.seed
+	broad.frequency = noise.frequency
+	broad.fractal_octaves = 2
 	seasons.world = self
 	add_child(seasons)
 	water_mat.albedo_color = Color(seasons.colour("water"), 0.75)
@@ -230,7 +239,14 @@ func _ready() -> void:
 
 func height(x: float, z: float) -> float:
 	var n := noise.get_noise_2d(x, z)
-	return lerpf(n * 6.0 + 4.0, n * 35.0 + 5.0, hilliness(x, z))  # plains (1..7 m) → hills (±20 m)
+	var hill := hilliness(x, z)
+	var h := lerpf(n * 6.0 + 4.0, n * 35.0 + 5.0, hill)  # plains (-1..9 m) → hills (±20 m)
+	# Mountains: the hills' broad crests raised by up to MOUNTAIN m, twice as high at the top. Only the
+	# large-scale shape is raised (wide massifs, slopes ~1.5x steeper, not 2x), and nothing where
+	# hilliness ≤ 0.2 or below the crests: plains, villages, lakes and shores stay as they were.
+	if hill > 0.2:
+		h += MOUNTAIN * smoothstep(0.2, 1.0, hill) * smoothstep(MOUNTAIN_FROM, MOUNTAIN_TOP, broad.get_noise_2d(x, z))
+	return h
 
 
 ## 0 = plain, 1 = hills. Very low frequency (regions of ~1 km), sampled far from the height noise.
@@ -261,13 +277,13 @@ func tree_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 		var wx := cell.x * ZONE_SIZE + lx
 		var wz := cell.y * ZONE_SIZE + lz
 		var h := height(wx, wz)
-		if h < WATER_LEVEL + 2.0 or h > 20.0 or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
+		if h < WATER_LEVEL + 2.0 or h > TREE_LINE or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
 			continue
 		if forest(wx, wz) < 0.0:  # forests vs clearings
 			continue
 		# Species in groves: conifers up high, oak/birch patches below.
 		var v := noise.get_noise_2d(wx * 2.0 - 7000.0, wz * 2.0)
-		var kind := TreeKind.CONIFER if h > 14.0 or v < -0.1 else (TreeKind.OAK if v < 0.1 else TreeKind.BIRCH)
+		var kind := TreeKind.CONIFER if h > TREE_LINE * 0.7 or v < -0.1 else (TreeKind.OAK if v < 0.1 else TreeKind.BIRCH)
 		# Variant from position, not the RNG, so adding variants never moved existing trees.
 		var variant := hash(Vector3i(roundi(wx * 10.0), roundi(wz * 10.0), 7)) % TREE_VARIANTS
 		out[kind * TREE_VARIANTS + variant].append(Transform3D(Basis(Vector3.UP, rot).scaled(Vector3.ONE * s), Vector3(lx, h, lz)))
@@ -305,7 +321,7 @@ func bush_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 			if sp[2] >= 1.0 - absf(e) / (BUSH_EDGE if e < 0.0 else BUSH_EDGE * 0.5):  # 1 at the edge → 0 at the band's end
 				continue
 			var h := height(wx, wz)
-			if h < WATER_LEVEL + 1.0 or h > 20.0 or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
+			if h < WATER_LEVEL + 1.0 or h > TREE_LINE or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
 				continue
 			var variant := hash(Vector3i(roundi(wx * 10.0), roundi(wz * 10.0), 8)) % BUSH_VARIANTS
 			out[kind * BUSH_VARIANTS + variant].append(Transform3D(Basis(Vector3.UP, sp[4]).scaled(Vector3.ONE * sp[3]), Vector3(lx, h, lz)))
@@ -1160,7 +1176,7 @@ func _ground_color(h: float, up: float) -> Color:
 		return ground[0]  # sand / lakebed
 	if up < 0.8:
 		return ground[1]  # steep = rock
-	if h > 22.0:
+	if h > SNOW_LINE:
 		return ground[2]  # peaks
 	return ground[3]  # grass
 
@@ -1195,7 +1211,7 @@ func _shading(cell: Vector2i, res: int, mask: PackedByteArray, objects: Array, h
 			var hollow := around / 8.0 - lh[i]  # > 0 in a hollow or at the foot of a slope, < 0 on a crest
 			var l := 1.0 - HOLLOW_DARK * smoothstep(0.0, 1.5, hollow) + CREST_LIGHT * smoothstep(0.0, 1.5, -hollow)
 			var f := 0.0  # forest floor: where trees grow (tree_transforms' tests, bar the slope)
-			if lh[i] > WATER_LEVEL + 2.0 and lh[i] < 20.0 and mask[z * SHADE_STEP * (ZONE_SIZE + 1) + x * SHADE_STEP] == FREE:
+			if lh[i] > WATER_LEVEL + 2.0 and lh[i] < TREE_LINE and mask[z * SHADE_STEP * (ZONE_SIZE + 1) + x * SHADE_STEP] == FREE:
 				f = smoothstep(0.0, 0.3, forest(wx, wz))
 			light.append(l * (1.0 - FOREST_DARK * f))
 			# Meadow patches ~120 m wide, broken up by smaller ones (~30 m); deep green under the trees.
