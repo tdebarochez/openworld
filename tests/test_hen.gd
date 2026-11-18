@@ -73,18 +73,20 @@ func _check():
 	hen.play(&"nope", 3.0)
 	assert(ap.current_animation == "walk" and ap.speed_scale == 1.0)
 
-	# _animate() from the body's state.
+	# _animate() from move_state (player.gd sets it each physics frame; set here by hand) and the velocity.
 	assert(p.is_on_floor())
-	for c in [[Vector3.ZERO, "idle"], [Vector3(p.SPEED, 0, 0), "walk"], [Vector3(0, 0, p.SPEED * p.SPRINT_MULT), "run"]]:
+	for c in [[Vector3.ZERO, &"idle", "idle"], [Vector3(p.SPEED, 0, 0), &"walk", "walk"],
+			[Vector3(0, 0, p.SPEED * p.SPRINT_MULT), &"run", "run"], [Vector3.ZERO, &"swim", "idle"]]:
 		p.velocity = c[0]
+		p.move_state = c[1]
 		p._animate()
-		assert(ap.current_animation == c[1], "on the ground at %s: %s" % [c[0], ap.current_animation])
+		assert(ap.current_animation == c[2], "%s at %s: %s" % [c[1], c[0], ap.current_animation])
 	assert(is_equal_approx(ap.speed_scale, 1.0))
-	p.global_position.y += 30.0
-	for c in [[Vector3(0, 5, 0), "flap"], [Vector3(0, 0.2, 0), "flap"], [Vector3(0, -5, 0), "glide"]]:
+	# Top of a jump (slow fall) keeps the flap; a fast fall or a glide spreads the wings.
+	for c in [[Vector3(0, 5, 0), &"flap", "flap"], [Vector3(0, 0.2, 0), &"fall", "flap"],
+			[Vector3(0, -5, 0), &"fall", "glide"], [Vector3(0, 5, 0), &"flap", "flap"], [Vector3(0, -2, 0), &"glide", "glide"]]:
 		p.velocity = c[0]
-		p.move_and_slide()
-		assert(not p.is_on_floor())
+		p.move_state = c[1]
 		p._animate()
-		assert(ap.current_animation == c[1], "in the air at %s: %s" % [c[0], ap.current_animation])
+		assert(ap.current_animation == c[2], "%s at %s: %s" % [c[1], c[0], ap.current_animation])
 	return true
