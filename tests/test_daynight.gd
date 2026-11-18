@@ -104,6 +104,8 @@ func _check():
 	var noon_energy := sun.light_energy
 	var noon_haze: Color = w.seasons.sky.sky_horizon_color
 	assert(sun.global_basis.z.y > 0.7)  # light shines along -Z: downwards
+	d.set_time(18.5)  # the terrain's warm/cool slopes follow the sun
+	assert(w.terrain_mat.get_shader_parameter("sun_dir").is_equal_approx(sun.global_basis.z), "terrain sun_dir stale")
 	d.set_time(0.0)
 	assert(sun.global_basis.z.y > 0.3, "moonlight from above")
 	assert(sun.light_energy < noon_energy * 0.5 and sun.light_energy > 0.0)
