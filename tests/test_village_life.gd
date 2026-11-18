@@ -2,8 +2,8 @@ extends SceneTree
 # Run: godot --headless --path . -s tests/test_village_life.gd
 # Village life (life.gd, ambience.gd): chimney smoke over a village's full zone; laundry out in fair
 # weather but not in winter or rain; windows lit at night, not at noon, and never all of them; flocks
-# grazing in open meadows (not in woods, villages, roads or water), deterministic; the bell rings the
-# hour near a square; water laps near a shore, not inland; the ambient players stay a fixed few.
+# grazing in open meadows (not in woods, villages, roads or water), deterministic; no village bell;
+# water laps near a shore, not inland; the ambient players stay a fixed few.
 
 var w
 var frames := 0
@@ -111,6 +111,15 @@ func _check():
 	life._process(0.0)
 	assert(life.lit > 0.5 and life.glass_mats.all(func(m): return m.next_pass == life.window_mat), "windows dark at night")
 	assert(life.windows_lit(2.0, -0.5, w.LAMP_ON_SUN) < 0.3, "everyone up at 2 am")
+	assert(life.window_mat.get_shader_parameter("panes") < 0.7, "every pane of a lit house lit")
+	# Smoke follows the sky: dusky at night, not the white ghost trees it was on the web renderer.
+	var night_smoke: Vector3 = life.smoke_mat.get_shader_parameter("light")
+	w.daynight.set_time(13.0)
+	life._process(0.0)
+	var day_smoke: Vector3 = life.smoke_mat.get_shader_parameter("light")
+	assert(night_smoke.length() < day_smoke.length() * 0.5, "smoke as bright at night %s as by day %s" % [night_smoke, day_smoke])
+	w.daynight.set_time(21.5)
+	life._process(0.0)
 	var on := 0
 	var all := 0
 	for gx in range(-6, 6):
@@ -122,26 +131,11 @@ func _check():
 	print("windows lit at 21:30: %d / %d houses" % [on, all])
 	assert(on > all / 2 and on < all, "all or too few houses lit")
 
-	# Ambience: the bell on the hour near a square, not far away; lapping near a shore, not inland.
+	# Ambience: no village bell (no bell tower yet); lapping near a shore, not inland.
 	var amb = w.find_children("", "Node", false, false).filter(func(n): return n.get_script() == preload("res://ambience.gd"))[0]
 	var sq := Vector3(v.centre.x, w.height(v.centre.x, v.centre.y) + 1.0, v.centre.y)
-	w.daynight.set_time(9.95)
-	amb.update(sq)
-	assert(not amb.bell.playing)
+	assert(not "bell" in amb, "a bell with no bell tower")
 	w.daynight.set_time(10.0)
-	amb.update(sq)
-	assert(amb.bell.playing and amb.tolls == 9 and amb.bell.position.distance_to(sq) < 10.0, "no bell at 10:00")
-	amb.bell.stop()
-	amb.tolls = 0
-	w.daynight.set_time(10.5)
-	amb.update(sq)
-	assert(not amb.bell.playing, "bell off the hour")
-	w.daynight.set_time(10.95)
-	amb.update(sq + Vector3(3000, 0, 3000))  # nothing within reach out there? then no bell
-	w.daynight.set_time(11.0)
-	amb.update(sq + Vector3(3000, 0, 3000))
-	assert(amb.bell.playing == (amb.square(sq + Vector3(3000, 0, 3000)) != null))
-	amb.bell.stop()
 	var coast := Vector3.INF
 	var inland := Vector3.INF
 	for x in range(-1500, 1500, 9):

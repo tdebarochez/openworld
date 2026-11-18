@@ -20,13 +20,18 @@ const LAUNDRY_HEIGHT := 1.8  # m, the line above the lower post's foot
 const FORGE_SHARE := 0.4  # villages with a forge, against the right wall of one house
 const FORGE_SMOKE := Vector3(0, 3.25, -0.3)  # top of the forge's chimney, in its frame
 const SMOKE_PUFFS := 7  # per chimney, rising one after the other
+const SMOKE_LIGHT := 1.05  # smoke = its colour × the horizon haze × this
+const WINDOW_PANES := 0.45  # share of a lit house's panes that glow
 # Smoke: puffs rise, swell and fade (one cycle = PERIOD s), drifting downwind; each chimney smokes while
 # `share` is above its own dice (INSTANCE_CUSTOM.r), so more or fewer houses smoke without a rebuild.
-# Billboards built in view space (skip_vertex_transform), lit from above like the clouds.
+# Billboards built in view space (skip_vertex_transform), unshaded and tinted by `light` (the sky's
+# horizon colour, set each frame, as the clouds are): pale by day, dusky blue at night. Lit by the scene
+# they stayed near white at night on the web renderer's flat ambient, ghost trees over the village.
 const SMOKE_SHADER := """
 shader_type spatial;
-render_mode skip_vertex_transform, cull_disabled, depth_draw_never, shadows_disabled;
+render_mode skip_vertex_transform, cull_disabled, depth_draw_never, shadows_disabled, unshaded;
 uniform vec3 colour : source_color;
+uniform vec3 light = vec3(1.0);
 uniform float share = 0.5;
 uniform vec3 wind = vec3(2.0, 0.0, 1.0);  // m drifted by the top of the plume
 const float PERIOD = 7.0;
@@ -44,23 +49,27 @@ void vertex() {
 	alpha = smoothstep(dice.r, dice.r + 0.08, share) * smoothstep(0.0, 0.1, t) * (1.0 - t) * 0.75;
 }
 void fragment() {
-	ALBEDO = colour;
+	ALBEDO = colour * light;
 	ALPHA = alpha * (1.0 - smoothstep(0.4, 1.0, length(UV - 0.5) * 2.0));
 	ROUGHNESS = 1.0;
 }
 """
-# Lit windows: drawn over the house glass (next_pass, only from dusk to dawn), warm on the houses whose
-# dice (INSTANCE_CUSTOM.r) are under `lit`, each a little warmer or paler (INSTANCE_CUSTOM.g).
+# Lit windows: drawn over the house glass (next_pass, only from dusk to dawn), on the houses whose dice
+# (INSTANCE_CUSTOM.r) are under `lit`, and in those only the panes (each its own dice in the vertex
+# colour's alpha, _tag_windows; mixed with the house's INSTANCE_CUSTOM.b so no two houses match) under
+# `panes`: a room lit here and there, not the whole house. Each a little warmer or paler (.g).
 const WINDOW_SHADER := """
 shader_type spatial;
 render_mode unshaded, blend_add, depth_draw_never, shadows_disabled;
 uniform vec3 glow : source_color;
 uniform float lit = 0.0;
+uniform float panes = 0.45;
 uniform float energy = 1.1;
 varying float on;
 void vertex() {
 	VERTEX += NORMAL * 0.004;
-	on = step(INSTANCE_CUSTOM.r, lit) * mix(0.7, 1.2, INSTANCE_CUSTOM.g);
+	float pane = fract(COLOR.a * 7.31 + INSTANCE_CUSTOM.b * 3.17);
+	on = step(INSTANCE_CUSTOM.r, lit) * step(pane, panes) * mix(0.7, 1.2, INSTANCE_CUSTOM.g);
 }
 void fragment() {
 	ALBEDO = glow * energy * on;
@@ -147,6 +156,7 @@ func setup() -> void:
 	smoke_mat.set_shader_parameter("colour", s.colour("smoke"))
 	window_mat.shader = _shader(WINDOW_SHADER)
 	window_mat.set_shader_parameter("glow", s.colour("lamp"))
+	window_mat.set_shader_parameter("panes", WINDOW_PANES)
 	cloth_mat.shader = _shader(CLOTH_SHADER)
 	var shader := _shader(ANIMAL_SHADER)
 	for file in ANIMAL_FILES:
@@ -178,6 +188,7 @@ func setup() -> void:
 		animal_centres.append(body.get_center())
 	for k in world.HOUSE_KINDS:
 		var m: ArrayMesh = world.house_meshes[k]
+		_tag_windows(m)
 		glass_mats.append(m.surface_get_material(3))
 		# Chimney top: the highest stone (slot 4) vertices, the stack's four top corners (make_houses.py).
 		var top := -INF
@@ -195,6 +206,47 @@ func setup() -> void:
 	_make_smoke()
 	_make_laundry()
 	_make_forge()
+
+
+## Gives each pane of house mesh `m`'s glass (surface 3: one piece per window, make_houses.py) its own
+## dice in the vertex colour's alpha, which nothing else reads (the glass is opaque), so WINDOW_SHADER
+## can light some panes of a house and not others. A pane = the vertices its triangles join, plus those
+## at the same spot (split normals). Rewrites only the attribute buffer (colours), so LODs stay.
+static func _tag_windows(m: ArrayMesh) -> void:
+	var a := m.surface_get_arrays(3)
+	var pos: PackedVector3Array = a[Mesh.ARRAY_VERTEX]
+	var idx: PackedInt32Array = a[Mesh.ARRAY_INDEX]
+	var root := PackedInt32Array(range(pos.size()))
+	var at := {}  # snapped position -> first vertex there
+	for i in pos.size():
+		var key := pos[i].snapped(Vector3.ONE * 0.001)
+		_join(root, i, at.get(key, i))
+		at[key] = at.get(key, i)
+	for t in range(0, idx.size(), 3):
+		_join(root, idx[t], idx[t + 1])
+		_join(root, idx[t], idx[t + 2])
+	var surf := RenderingServer.mesh_get_surface(m.get_rid(), 3)
+	var data: PackedByteArray = surf.get("attribute_data", PackedByteArray())
+	var f := m.surface_get_format(3)
+	var stride := RenderingServer.mesh_surface_get_format_attribute_stride(f, pos.size())
+	var off := RenderingServer.mesh_surface_get_format_offset(f, pos.size(), Mesh.ARRAY_COLOR)
+	if data.size() < pos.size() * stride:  # no colour buffer (dummy renderer): every pane alike
+		return
+	for i in pos.size():
+		var r := _find(root, i)
+		data[i * stride + off + 3] = hash(pos[r].snapped(Vector3.ONE * 0.01)) & 0xFF  # RGBA8: alpha
+	m.surface_update_attribute_region(3, 0, data)
+
+
+static func _find(root: PackedInt32Array, i: int) -> int:
+	while root[i] != i:
+		root[i] = root[root[i]]
+		i = root[i]
+	return i
+
+
+static func _join(root: PackedInt32Array, i: int, j: int) -> void:
+	root[_find(root, i)] = _find(root, j)
 
 
 static func _shader(code: String) -> Shader:
@@ -253,6 +305,8 @@ func _process(_delta: float) -> void:
 			m.next_pass = window_mat if l > 0.0 else null
 	smoking = smoke_share(dn.time, world.seasons.season)
 	smoke_mat.set_shader_parameter("share", smoking)
+	var haze: Color = world.seasons.sky.sky_horizon_color  # already dimmed at night and by overcast
+	smoke_mat.set_shader_parameter("light", Vector3(haze.r, haze.g, haze.b) * SMOKE_LIGHT)
 	smoke_mat.set_shader_parameter("wind", Vector3(wx.wind.x, 0.0, wx.wind.y) * (2.0 + 4.0 * wx.rain + 2.0 * wx.overcast))
 	var out := washing_out(world.seasons.season, wx.rain)
 	if out != laundry_out:

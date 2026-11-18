@@ -1,28 +1,22 @@
 extends Node
 ## Ambient sounds by place, heard from the player's ear (tools/make_sounds.py): water lapping on a lake
-## shore (not on winter ice), the village bell ringing the hour by day from the nearest square, a
-## forge's hammer at work, the bells and calls of a flock. One AudioStreamPlayer3D per kind (POOL in
-## all), moved to the nearest source in range a few times a second, stopped when none is.
+## shore (not on winter ice), a forge's hammer at work, the bells and calls of a flock. One
+## AudioStreamPlayer3D per kind (POOL in all), moved to the nearest source in range a few times a
+## second, stopped when none is. No village bell until there is a bell tower to ring it from
+## (assets/sounds/bell.wav is kept for it).
 
 const LOOK := 0.5  # s between searches
 const SHORE_R := 40.0  # m: lapping heard within this of open water
-const BELL_R := 350.0
 const FORGE_R := 60.0
 const FLOCK_R := 70.0
-const BELL_HOURS := Vector2i(7, 20)  # first and last hour rung
 const WORK_HOURS := Vector2(7.5, 19.0)  # the smith at the anvil
 const FLOCK_HOURS := Vector2(5.5, 22.0)  # flocks quiet at night
-const TOLL := 2.6  # s between strokes
-const POOL := 4
+const POOL := 3
 
 var world  # world.gd (the parent)
 var water := AudioStreamPlayer3D.new()
-var bell := AudioStreamPlayer3D.new()
 var forge := AudioStreamPlayer3D.new()
 var flock := AudioStreamPlayer3D.new()
-var tolls := 0  # strokes still to ring this hour
-var next_toll := 0.0
-var _hour := -1  # floor of daynight.hours() at the last update
 var _look := 0.0
 
 
@@ -30,7 +24,6 @@ func _ready() -> void:
 	world = get_parent()
 	# [player, stream, dB, metres at full volume, metres heard]
 	for p in [[water, preload("res://assets/sounds/water_lap.wav"), -4.0, 4.0, SHORE_R + 10.0],
-			[bell, preload("res://assets/sounds/bell.wav"), 2.0, 60.0, BELL_R + 50.0],
 			[forge, preload("res://assets/sounds/forge.wav"), -2.0, 6.0, FORGE_R + 10.0],
 			[flock, preload("res://assets/sounds/sheep.wav"), -3.0, 6.0, FLOCK_R + 10.0]]:
 		var a: AudioStreamPlayer3D = p[0]
@@ -39,7 +32,6 @@ func _ready() -> void:
 		a.unit_size = p[3]
 		a.max_distance = p[4]
 		add_child(a)
-	bell.max_polyphony = 3  # strokes ring into each other
 
 
 func _process(delta: float) -> void:
@@ -49,16 +41,11 @@ func _process(delta: float) -> void:
 	if _look <= 0.0:
 		_look = LOOK
 		update(world.player.global_position)
-	if tolls > 0:
-		next_toll -= delta
-		if next_toll <= 0.0:
-			_toll()
 
 
-## Moves each sound to its nearest source around `p` (or stops it), and starts the bell on the hour.
+## Moves each sound to its nearest source around `p` (or stops it).
 func update(p: Vector3) -> void:
-	var dn = world.daynight
-	var hour: float = dn.time
+	var hour: float = world.daynight.time
 	var ice: bool = world.seasons.season == world.seasons.Season.WINTER
 	_play(water, null if ice else shore(p))
 	var near := _nearest_life(p)
@@ -71,20 +58,6 @@ func update(p: Vector3) -> void:
 			flock.stop()
 			flock.stream = s
 	_play(flock, herd[0] if herd else null)
-	var h := floori(dn.hours())
-	if _hour >= 0 and h > _hour and h % 24 >= BELL_HOURS.x and h % 24 <= BELL_HOURS.y:
-		var sq = square(p)
-		if sq != null:
-			bell.position = sq
-			tolls = (h + 11) % 12 + 1  # 13:00 → one stroke, noon → twelve
-			_toll()
-	_hour = h
-
-
-func _toll() -> void:
-	bell.play()
-	tolls -= 1
-	next_toll = TOLL
 
 
 ## Plays `a` at `at` (looping from a random point when it starts), or stops it for null.
@@ -111,19 +84,6 @@ func shore(p: Vector3):
 		if best != null:
 			return best
 	return null
-
-
-## Nearest village square within BELL_R of `p` (the bell rings 8 m above it), or null.
-func square(p: Vector3):
-	var best = null
-	for g in _squares_near(p, BELL_R):
-		var s: Dictionary = world.village_site(g)
-		if s.is_empty():
-			continue
-		var c := Vector3(s.centre.x, world.height(s.centre.x, s.centre.y) + 8.0, s.centre.y)
-		if Vector2(c.x - p.x, c.z - p.z).length() < BELL_R and (best == null or c.distance_to(p) < best.distance_to(p)):
-			best = c
-	return best
 
 
 ## {"forge": position or null, "flock": [position, Animal] or null}: the nearest forge within FORGE_R
