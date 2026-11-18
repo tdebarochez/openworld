@@ -31,6 +31,7 @@ func _physics_process(_delta: float) -> bool:
 	if frames == 400:
 		var y: float = w.player.global_position.y
 		assert(absf(y - (w.WATER_LEVEL - 0.3)) < 0.15, "not floating, y=%f" % y)
+		assert(w.player.move_state == &"swim")
 		print("SWIM OK y=", y)
 		quit()
 	return false

@@ -17,6 +17,14 @@ const ISO_PITCH := -0.6155  # -atan(1/sqrt(2))
 const ISO_YAW := PI / 4.0
 const ISO_DIST := 100.0  # m back along the view ray: high enough to clear the hills in front
 const ISO_SHADOWS := 220.0  # sun shadow range from the camera in iso view (default 100 m ends before the player)
+# Hen moves: Space in the air flaps, the left mouse button held while falling glides.
+const FLAP := 4.5  # m/s up per wing beat (not added: mashing can't stack): +1 m at a jump's apex (v²/2g)
+const MAX_FLAPS := 3  # per airtime, refilled on the ground and in water: a flutter onto a roof, not flight
+const FLAP_ANIM := 0.4  # s of &"flap" after a jump or a wing beat
+const GLIDE_FALL := -2.0  # m/s sink while gliding: 4 m forward per metre down at walking speed
+const GLIDE_BRAKE := 25.0  # m/s² easing a faster fall back to GLIDE_FALL (net 15 against gravity: -6 → -2 in 0.27 s)
+const GLIDE_STEER := 6.0  # m/s² horizontal: a glide keeps its momentum and turns gently
+const AIR_GRACE := 0.15  # s off the floor before move_state says fall/glide (slopes and bumps don't flicker)
 
 var world: Node3D  # world.gd — used to keep the player inside existing zones
 var camera := Camera3D.new()
@@ -28,6 +36,14 @@ var iso_cam := Camera3D.new()
 var avatar := MeshInstance3D.new()  # hidden in first person
 var ear := AudioListener3D.new()  # birds are heard from the player, not from a camera behind or far above
 var fp_shadows := 0.0
+## For the avatar's animations: idle, walk, run, flap, glide, fall or swim; set every physics frame.
+var move_state: StringName = &"idle"
+var flaps := MAX_FLAPS  # wing beats left in this airtime
+var flap_time := 0.0  # s left of &"flap"
+var air := 0.0  # s since the feet last touched the floor
+var space_was := false  # Space held last frame: a flap needs a fresh press, holding it doesn't flutter
+var mouse_free := false  # released with Escape
+var glide_ok := true  # false for the click that takes the mouse back: it captures, it doesn't glide
 
 
 func _ready() -> void:
@@ -113,34 +129,61 @@ func _unhandled_input(e: InputEvent) -> void:
 			arm.rotation.x = clampf(arm.rotation.x - e.relative.y * MOUSE_SENS, -1.3, 0.4)
 	elif e is InputEventKey and e.pressed and e.keycode == KEY_ESCAPE:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		mouse_free = true
 	elif e is InputEventMouseButton and e.pressed:
+		# Own bookkeeping rather than Input.mouse_mode, which headless (tests) never reports as captured.
+		if e.button_index == MOUSE_BUTTON_LEFT:
+			glide_ok = not mouse_free
+		mouse_free = false
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _physics_process(delta: float) -> void:
 	# Body centre below the surface = swimming (feet ~1 m under water).
 	var swimming: bool = global_position.y < world.WATER_LEVEL
+	var space := Input.is_physical_key_pressed(KEY_SPACE)
+	var tap := space and not space_was
+	space_was = space
+	flap_time -= delta
+	var gliding := false
 	if swimming:
+		flaps = MAX_FLAPS
 		# Float with the head out; hold Space to rise and climb out onto the shore.
-		var target: float = SWIM_UP if Input.is_physical_key_pressed(KEY_SPACE) \
-			else (world.WATER_LEVEL - FLOAT_DEPTH - global_position.y) * 3.0
+		var target: float = SWIM_UP if space else (world.WATER_LEVEL - FLOAT_DEPTH - global_position.y) * 3.0
 		velocity.y = move_toward(velocity.y, target, 10.0 * delta)
 	elif not is_on_floor():
 		velocity += get_gravity() * delta
-	elif Input.is_physical_key_pressed(KEY_SPACE):
-		velocity.y = JUMP
-		sfx.jump()
+		if tap and flaps > 0:
+			flaps -= 1
+			velocity.y = maxf(velocity.y, FLAP)
+			flap_time = FLAP_ANIM
+			sfx.flap()
+		gliding = velocity.y < 0.0 and glide_ok and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+		if gliding and velocity.y < GLIDE_FALL:
+			velocity.y = minf(velocity.y + GLIDE_BRAKE * delta, GLIDE_FALL)
+	else:
+		flaps = MAX_FLAPS
+		if space:
+			velocity.y = JUMP
+			flap_time = FLAP_ANIM
+			sfx.jump()
 	var input := Vector2(
 		float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
 		float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
 	var speed := (SWIM_SPEED if swimming else SPEED) * (SPRINT_MULT if Input.is_physical_key_pressed(KEY_SHIFT) else 1.0)
 	# Iso: keys follow the screen (up = away from the camera) and the player turns to face its way.
 	var iso := view == View.ISO
-	var dir := ((Basis(Vector3.UP, ISO_YAW) if iso else basis) * Vector3(input.x, 0, input.y)).normalized() * speed
+	var dir := ((Basis(Vector3.UP, ISO_YAW) if iso else basis) * Vector3(input.x, 0, input.y)).normalized()
 	if iso and dir:
 		rotation.y = atan2(-dir.x, -dir.z)
-	velocity.x = dir.x
-	velocity.z = dir.z
+	if gliding:  # momentum carries on, drifting the way the hen faces (or the keys steer) at walking speed
+		var want := (dir if dir else -global_basis.z) * speed
+		var h := Vector2(velocity.x, velocity.z).move_toward(Vector2(want.x, want.z), GLIDE_STEER * delta)
+		velocity.x = h.x
+		velocity.z = h.y
+	else:
+		velocity.x = dir.x * speed
+		velocity.z = dir.z * speed
 	var prev := global_position
 	move_and_slide()
 	sfx.update(delta, is_on_floor(), swimming, Vector2(velocity.x, velocity.z).length())
@@ -148,5 +191,19 @@ func _physics_process(delta: float) -> void:
 	if not world.is_solid(world.cell_of(global_position)):
 		global_position.x = prev.x
 		global_position.z = prev.z
+		velocity.x = 0.0  # a glide doesn't keep pushing into the edge
+		velocity.z = 0.0
+	air = 0.0 if is_on_floor() else air + delta
+	var ground_speed := Vector2(velocity.x, velocity.z).length()
+	if swimming:
+		move_state = &"swim"
+	elif air > 0.0 and flap_time > 0.0:
+		move_state = &"flap"
+	elif air > AIR_GRACE:
+		move_state = &"glide" if gliding else &"fall"
+	elif ground_speed < 0.5:
+		move_state = &"idle"
+	else:
+		move_state = &"run" if ground_speed > SPEED * 1.5 else &"walk"
 	if iso:
 		_follow()
