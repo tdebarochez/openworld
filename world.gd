@@ -68,6 +68,12 @@ const LAMP_ON_SUN := 0.05  # lamps light up once the sun is lower than this (dir
 enum Prop { BENCH, PLAIN_BENCH, PLANTER }  # village street furniture (_make_props); PLAIN = no backrest
 const BENCH_RADIUS := 8.0  # m from the village centre: the edge of the dirt square, between the lamps
 const PLANTER_TOP := 0.2  # m above the ground: the planter's soil, where its flowers stand
+# Village clearing (_mark_village): open ground VILLAGE_EDGE m past the roofs and the square's flower
+# clumps, its rim wobbling up to VILLAGE_WOBBLE m, then VILLAGE_FRINGE m over which the wild thins back in.
+const VILLAGE_EDGE := 4.0
+const VILLAGE_WOBBLE := 4.0
+const VILLAGE_FRINGE := 10.0
+const VILLAGE_REACH := 60.0  # m from a village centre its clearing can reach (roofs ≤ 17 + 2 × 9 m out, + 4 + 4 + 10)
 # Village flowers: tulips (spring) in front of one of the summer bloomers, picked per planter or clump.
 const VILLAGE_FLOWERS := ["tulip", "poppy", "sunflower", "heather"]
 const ROAD_HALF := 2.0  # road half-width, metres
@@ -599,9 +605,9 @@ func layout(cell: Vector2i) -> Dictionary:
 		for gz in range(lo.y, hi.y + 1):
 			var g := Vector2i(gx, gz)
 			var v := village(g)
-			if v.is_empty() or (v.centre - origin).abs().x > half + 40.0 or (v.centre - origin).abs().y > half + 40.0:
+			if v.is_empty() or (v.centre - origin).abs().x > half + VILLAGE_REACH or (v.centre - origin).abs().y > half + VILLAGE_REACH:
 				continue
-			_mark_segment(mask, v.centre - origin, v.centre - origin, 7.0, 9.0)  # the square
+			_mark_village(mask, v, origin)
 			near.append_array(v.houses)
 			for hs in v.houses:
 				var lp := Vector2(hs[0].x, hs[0].z) - origin
@@ -639,6 +645,53 @@ func _mark_segment(mask: PackedByteArray, a: Vector2, b: Vector2, road_r: float,
 			if d <= road_r:
 				mask[i] = ROAD
 			elif d <= clear_r and mask[i] == FREE:
+				mask[i] = CLEAR
+
+
+## Marks village `v`'s dirt square (7 m) as ROAD and its clearing as CLEAR (zone-local mask, zone centre
+## `origin`). The clearing's rim runs from house to house by angle, VILLAGE_EDGE past each roof, so the
+## gaps between houses, the square's furniture and the doorsteps are all open ground; noise makes it
+## wobble, and past it a share of the vertices growing over VILLAGE_FRINGE m stays FREE (world-hashed,
+## so neighbouring zones agree): the woods thin in instead of stopping at a wall.
+func _mark_village(mask: PackedByteArray, v: Dictionary, origin: Vector2) -> void:
+	var c: Vector2 = v.centre
+	var floor_r := BENCH_RADIUS + 2.5 + VILLAGE_EDGE  # the bench flower clumps reach ~2.3 m past the benches
+	var rim := []  # [angle, distance] of each house's farthest roof edge from the centre, sorted by angle
+	for hs in v.houses:
+		var d := Vector2(hs[0].x, hs[0].z) - c
+		rim.append([d.angle(), maxf(d.length() + house_radius[hs[2]] + VILLAGE_EDGE, floor_r)])
+	rim.sort()
+	var reach: float = rim.reduce(func(m, e): return maxf(m, e[1]), floor_r) + VILLAGE_WOBBLE + VILLAGE_FRINGE
+	var n := ZONE_SIZE + 1
+	var half := ZONE_SIZE / 2
+	var lc := c - origin
+	for z in range(maxi(floori(lc.y - reach) + half, 0), mini(ceili(lc.y + reach) + half, n - 1) + 1):
+		for x in range(maxi(floori(lc.x - reach) + half, 0), mini(ceili(lc.x + reach) + half, n - 1) + 1):
+			var i := z * n + x
+			var off := Vector2(x - half, z - half) - lc
+			var d := off.length()
+			if d <= 7.0:
+				mask[i] = ROAD
+				continue
+			if mask[i] != FREE or d > reach:
+				continue
+			var r := floor_r
+			if not rim.is_empty():  # interpolate between the houses on either side of this angle
+				var a := off.angle()
+				var k := 0
+				while k < rim.size() and rim[k][0] < a:
+					k += 1
+				var p: Array = rim[k - 1]  # k = 0 wraps to the last house
+				var q: Array = rim[k % rim.size()]
+				var span := wrapf(q[0] - p[0], 0.0, TAU)
+				r = lerpf(p[1], q[1], wrapf(a - p[0], 0.0, TAU) / span if span > 0.0 else 0.0)
+			if d < r - VILLAGE_WOBBLE:
+				mask[i] = CLEAR
+				continue
+			var wx := x - half + origin.x
+			var wz := z - half + origin.y
+			var e := d - r - VILLAGE_WOBBLE * noise.get_noise_2d(wx * 8.0 - 11000.0, wz * 8.0)  # m past the rim
+			if e < 0.0 or (e < VILLAGE_FRINGE and float(hash(Vector2i(roundi(wx), roundi(wz))) & 0xFFFF) / 65536.0 * VILLAGE_FRINGE > e):
 				mask[i] = CLEAR
 
 

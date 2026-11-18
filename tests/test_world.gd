@@ -191,6 +191,37 @@ func _init() -> void:
 		assert(lay.houses.any(func(l): return not l.is_empty()))
 		assert(not lay.lamps.is_empty(), "no street lamp in a village zone")
 		break
+	# Villages are clearings, in every zone they reach and at the highest density: no tree, bush or rock
+	# on the square or its furniture, near a house, lamp or prop, or between the houses (their polygon).
+	w.density = w.DENSITY_MAX
+	var in_village := 0
+	var cleared := 0
+	for gx in range(-5, 5):
+		for gz in range(-5, 5):
+			var v: Dictionary = w.village(Vector2i(gx, gz))
+			if v.is_empty():
+				continue
+			cleared += 1
+			var ring := PackedVector2Array()  # houses by angle round the square
+			for hs in v.houses:
+				ring.append(Vector2(hs[0].x, hs[0].z))
+			var cells := {}
+			for dx in [-1, 0, 1]:
+				for dz in [-1, 0, 1]:
+					cells[w.cell_of(Vector3(v.centre.x + dx * 45.0, 0, v.centre.y + dz * 45.0))] = true
+			for cell in cells:
+				var mask: PackedByteArray = w.layout(cell).mask
+				var o: Vector2 = Vector2(cell) * w.ZONE_SIZE
+				for list in w.tree_transforms(cell, mask) + w.bush_transforms(cell, mask) + w.rock_transforms(cell, mask):
+					for t in list:
+						var p: Vector2 = Vector2(t.origin.x, t.origin.z) + o
+						if p.distance_to(v.centre) < w.BENCH_RADIUS + 4.0 or w.in_house(p, v.houses, 2.0) \
+								or not w._far_from(p, v.lamps + v.props, 2.0) \
+								or (ring.size() >= 3 and Geometry2D.is_point_in_polygon(p, ring)):
+							in_village += 1
+	w.density = 1.0
+	print("trees, bushes and rocks inside %d villages at density %s: %d" % [cleared, w.DENSITY_MAX, in_village])
+	assert(cleared > 5 and in_village == 0, "trees, bushes or rocks inside a village")
 	# Benches, planters and village flowers: deterministic, off the roads, out of the houses, clear of
 	# the lamps and of each other; benches face the square, planters stand against a front wall; a
 	# village zone's layout and full build carry them.
