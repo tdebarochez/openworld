@@ -113,7 +113,7 @@ static func sun_dir(h: float, decl := 0.0) -> Vector3:
 func apply() -> void:
 	var s: Dictionary = world.seasons.light
 	var sun: DirectionalLight3D = world.seasons.sun
-	var sky: ProceduralSkyMaterial = world.seasons.sky
+	var sky = world.seasons.sky
 	var env: Environment = world.seasons.env
 	var dir := sun_dir(time, DECLINATION[world.seasons.season])
 	var day := smoothstep(-0.15, 0.2, dir.y)

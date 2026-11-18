@@ -281,9 +281,9 @@ func _process(_delta: float) -> void:
 	var h: float = world.daynight.hours()  # 64-bit: wrapped before it reaches the 32-bit shader
 	drift = Vector3(fposmod(h * SPEED.x, WRAP), fposmod(h * SPEED.y, WRAP), fposmod(h * SPEED.z, WRAP))
 	var sun: DirectionalLight3D = world.seasons.sun
-	var sky: ProceduralSkyMaterial = world.seasons.sky
+	var sky = world.seasons.sky
 	var light := sun.light_color * sun.light_energy
-	var haze := sky.sky_horizon_color
+	var haze: Color = sky.sky_horizon_color
 	var shade: Color = sky.sky_top_color.lerp(haze, 0.6) * (1.0 - 0.35 * wx.overcast) + light * 0.15
 	lit = (haze * 0.85 + light * 0.45).lerp(shade, wx.overcast * 0.5)  # overcast: flatter, greyer
 	mat.set_shader_parameter("lit", lit)

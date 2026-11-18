@@ -130,7 +130,7 @@ var snowy_mats: Array[ShaderMaterial] = []  # same indices, winter leaves (used 
 var roof_mats: Array[Material] = []  # per house kind then cabin kind, the roof (surface 1, tools/make_houses.py, make_cabins.py)
 var snowy_roofs: Array[ShaderMaterial] = []  # same snowy shader: white on the slopes, roof colour below
 var env: Environment
-var sky: ProceduralSkyMaterial
+var sky  # world.SkyMaterial: ProceduralSkyMaterial's colour properties, set dynamically
 var sun: DirectionalLight3D
 var base := {}  # summer light values
 var flower_mats := []  # per flower kind: its original material per surface

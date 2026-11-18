@@ -1556,15 +1556,73 @@ func _update_hud() -> void:
 		zones.size(), seasons.NAMES[seasons.season], daynight.clock(), density, view_dist, weather.label if weather else ""]
 
 
+## ProceduralSkyMaterial's sky (same curves, same property names, so callers set colours as before),
+## except that the sun/moon glow also lights the ground half — seen from a summit past the end of the
+## terrain, below the horizon — and never darkens the sky (a dim low sun or moon used to paint a dark
+## blob on the bright dusk haze).
+class SkyMaterial extends ShaderMaterial:
+	const PARAMS := ["sky_top_color", "sky_horizon_color", "ground_horizon_color", "ground_bottom_color",
+		"sky_cover", "sky_cover_modulate"]
+	const CODE := """
+shader_type sky;
+uniform vec3 sky_top_color : source_color;
+uniform vec3 sky_horizon_color : source_color;
+uniform vec3 ground_horizon_color : source_color;
+uniform vec3 ground_bottom_color : source_color;
+uniform sampler2D sky_cover : filter_linear, source_color, hint_default_black;
+uniform vec4 sky_cover_modulate : source_color = vec4(1.0);
+const float SKY_CURVE = 0.15;  // ProceduralSkyMaterial's defaults
+const float GROUND_CURVE = 0.02;
+const float GLOW_ANGLE = 0.5236;  // 30°
+const float GLOW_CURVE = 0.15;
+
+void sky() {
+	float v = acos(clamp(EYEDIR.y, -1.0, 1.0));
+	vec3 col;
+	if (EYEDIR.y >= 0.0) {
+		col = mix(sky_horizon_color, sky_top_color, clamp(1.0 - pow(1.0 - (1.0 - v / (PI * 0.5)), 1.0 / SKY_CURVE), 0.0, 1.0));
+		vec4 stars = texture(sky_cover, SKY_COORDS);
+		col += stars.rgb * sky_cover_modulate.rgb * stars.a * sky_cover_modulate.a;
+	} else {
+		col = mix(ground_horizon_color, ground_bottom_color, clamp(1.0 - pow(1.0 - (v / (PI * 0.5) - 1.0), 1.0 / GROUND_CURVE), 0.0, 1.0));
+	}
+	if (LIGHT0_ENABLED) {  // daynight's disc: sky-only sun or moon
+		float a = acos(clamp(dot(LIGHT0_DIRECTION, EYEDIR), -1.0, 1.0));
+		vec3 light = LIGHT0_COLOR * LIGHT0_ENERGY;
+		if (a < LIGHT0_SIZE) {
+			col = max(col, light);
+		} else if (a < GLOW_ANGLE) {
+			float t = (a - LIGHT0_SIZE) / (GLOW_ANGLE - LIGHT0_SIZE);
+			col = max(col, mix(light, col, clamp(1.0 - pow(1.0 - t, 1.0 / GLOW_CURVE), 0.0, 1.0)));
+		}
+	}
+	COLOR = col;
+}
+"""
+
+	func _init() -> void:
+		shader = Shader.new()
+		shader.code = CODE
+
+	func _set(p: StringName, v: Variant) -> bool:
+		if p in PARAMS:
+			set_shader_parameter(p, v)
+			return true
+		return false
+
+	func _get(p: StringName) -> Variant:
+		return get_shader_parameter(p) if p in PARAMS else null
+
+
 func _setup_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = Sky.new()
-	var sky_mat := ProceduralSkyMaterial.new()
+	var sky_mat = SkyMaterial.new()  # untyped: its colours are dynamic (_get/_set) properties
 	# Haze = sky horizon colour; the ground half of the sky matches it so nothing shows past the fog.
 	sky_mat.sky_top_color = seasons.colour("sky")
 	sky_mat.sky_horizon_color = seasons.colour("haze")
-	var haze := sky_mat.sky_horizon_color
+	var haze: Color = sky_mat.sky_horizon_color
 	sky_mat.ground_horizon_color = haze
 	sky_mat.ground_bottom_color = haze
 	env.sky.sky_material = sky_mat

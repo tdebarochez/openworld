@@ -153,6 +153,11 @@ func _check():
 	assert(is_equal_approx(sun.light_energy, noon_energy * w.seasons.LIGHT[S.WINTER].energy))
 	assert(sun.light_color.is_equal_approx(w.seasons.light.sun))
 	assert(w.seasons.sky.sky_horizon_color.is_equal_approx(w.seasons.light.haze))
+	# The sky's own shader (not ProceduralSkyMaterial, whose glow stops dead at the horizon): the colours
+	# reach its uniforms, and the sun/moon glow is computed outside the above-the-horizon branch.
+	var code: String = w.seasons.sky.shader.code
+	assert(w.seasons.sky.get_shader_parameter("sky_horizon_color") == w.seasons.light.haze)
+	assert(code.find("if (LIGHT0_ENABLED)") > code.find("} else {"), "glow only above the horizon")
 	assert(w.seasons.env.fog_depth_begin == w.seasons.light.fog)
 	d.set_time(0.0)
 	assert(sun.light_color.is_equal_approx(w.seasons.light.sun * d.MOON))
@@ -161,7 +166,7 @@ func _check():
 
 	# Night sky cover: stars + Milky Way, shown at night only, brighter along the band's great circle
 	# (well above the horizon) than 50° off it, high in the sky, and the same on every build.
-	var sky: ProceduralSkyMaterial = w.seasons.sky
+	var sky = w.seasons.sky
 	var img: Image = sky.sky_cover.get_image()
 	assert(img.get_size() == Vector2i(2048, 1024))
 	d.set_time(0.0)
