@@ -30,6 +30,57 @@ const SHADOW_BLUR := 1.5
 const AGX_CONTRAST := 1.7
 const GRADE_SATURATION := 1.4  # AgX desaturates bright colours: brought back after it
 const GRADE := [Color(0.03, 0.05, 0.11), Color(0.53, 0.5, 0.46), Color(1.0, 0.97, 0.9)]  # bluish darks, warm lights
+const COMPAT_GRADE := 0.35  # Compatibility applies the curve far stronger: this share of its bend only
+# Post. Glow: only what goes past the HDR threshold blooms (sun disc, lit lanterns, sunlit snow), softly.
+# The heavy Forward+-only effects can be turned off here: SSAO (subtle, over the baked vertex AO) and
+# SUN_SHAFTS (volumetric fog lit by the shadowed sun, only while it is low: rays through the trees).
+# The morning valley mist (MIST_SHADER, both renderers) is daynight.gd's MIST.
+const GLOW := 0.35
+const GLOW_THRESHOLD := 1.0
+const COMPAT_GLOW_THRESHOLD := 0.9
+const SSAO := true
+const SUN_SHAFTS := true
+# Morning mist: a full-screen pass integrating an exponential height fog (densest at the water level,
+# thinning out above) along each view ray up to the depth buffer, so it pools in valleys and over lakes,
+# stays clear around the camera and hills poke out of it. daynight.gd sets its density and colours.
+const MIST_SHADER := """
+shader_type spatial;
+render_mode unshaded, fog_disabled, depth_test_disabled, depth_draw_never, cull_disabled, shadows_disabled;
+uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
+uniform float density = 0.0;  // extinction per m at the floor
+uniform float floor_y = 0.0;
+uniform float falloff = 0.3;  // per m above the floor
+uniform float max_alpha = 0.85;
+uniform vec3 colour;  // sRGB (no source_color: Compatibility outputs sRGB, see OUTPUT_IS_SRGB)
+uniform vec3 glow;  // towards the sun (forward scattering), sRGB
+uniform vec3 sun_dir = vec3(0.0, 1.0, 0.0);
+void vertex() {
+	POSITION = vec4(VERTEX.xy * 2.0, 0.5, 1.0);  // QuadMesh 1x1: the whole screen
+}
+void fragment() {
+	float depth = texture(depth_tex, SCREEN_UV).x;
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+	vec3 ndc = vec3(SCREEN_UV, depth) * 2.0 - 1.0;
+#else
+	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth);
+#endif
+	vec4 p = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
+	vec4 o = INV_PROJECTION_MATRIX * vec4(ndc.xy, 1.0, 1.0);  // near plane: reversed z in both renderers (4.7)
+	vec3 wp = (INV_VIEW_MATRIX * vec4(p.xyz / p.w, 1.0)).xyz;
+	vec3 wo = (INV_VIEW_MATRIX * vec4(o.xyz / o.w, 1.0)).xyz;  // ray start (camera, or ortho plane)
+	float t = length(wp - wo);
+	vec3 rd = (wp - wo) / max(t, 1e-4);
+	// ∫ density·exp(-falloff·(y - floor)) along the ray, clamped at the floor (no overflow under water).
+	float ya = max(wo.y - floor_y, 0.0);
+	float yb = max(wp.y - floor_y, 0.0);
+	float ea = exp(-falloff * ya);
+	float dy = yb - ya;
+	float od = density * t * (abs(dy) > 0.01 ? (ea - exp(-falloff * yb)) / (falloff * dy) : ea);
+	vec3 c = mix(colour, glow, pow(max(dot(rd, sun_dir), 0.0), 8.0));
+	ALBEDO = OUTPUT_IS_SRGB ? c : mix(pow((c + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), c * (1.0 / 12.92), lessThan(c, vec3(0.04045)));
+	ALPHA = (1.0 - exp(-od)) * max_alpha;
+}
+"""
 # Detail by distance. FULL: everything. LIGHT (beyond NEAR_DIST): terrain, trees, houses and water only —
 # no rocks, flowers or collision (nothing out there can be touched). COARSE (beyond COARSE_DIST): LIGHT
 # with a COARSE_RES m terrain grid (16x fewer triangles) and skirts hiding the cracks against finer
@@ -193,6 +244,8 @@ var lamp_color := seasons.colour("lamp")
 var daynight  # daynight.gd, made in _ready
 var weather  # weather.gd, same
 var water_mat := StandardMaterial3D.new()
+var mist := MeshInstance3D.new()  # full-screen morning mist (MIST_SHADER), shown by daynight.gd
+var mist_mat := ShaderMaterial.new()  # its uniforms: daynight.gd sets them every frame
 var species: Array[Mesh] = []  # indexed by kind * TREE_VARIANTS + variant
 var bush_meshes: Array[Mesh] = []  # indexed by kind * BUSH_VARIANTS + variant
 var trunk_shape := CylinderShape3D.new()
@@ -2062,6 +2115,13 @@ void sky() {
 		return get_shader_parameter(p) if p in PARAMS else null
 
 
+## Colour-correction curve stops (dark, mid, light) for the renderer: Compatibility gets COMPAT_GRADE
+## of their bend away from the identity curve.
+static func grade_stops(stops: Array, compat: bool) -> Array:
+	var k := COMPAT_GRADE if compat else 1.0
+	return [0, 1, 2].map(func(i): return Color(i * 0.5, i * 0.5, i * 0.5).lerp(stops[i], k))
+
+
 func _setup_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
@@ -2094,17 +2154,45 @@ func _setup_environment() -> void:
 		env.ambient_light_energy = COMPAT_AMBIENT
 		env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	# Filmic look: AgX keeps bright warm light from going flat yellow, then a gentle grade lifts the
-	# shadows towards blue and warms the highlights (per-channel curves).
+	# shadows towards blue and warms the highlights (per-channel curves). daynight.gd re-tints the curve
+	# by the hour (grade()); Compatibility applies it far stronger, so it gets a share of the bend only.
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_agx_contrast = COMPAT_AGX_CONTRAST if compat else AGX_CONTRAST
 	env.adjustment_enabled = true
 	env.adjustment_saturation = GRADE_SATURATION
-	if not compat:  # Compatibility applies the curves far stronger (snow turned beige): saturation only there
-		var curve := Gradient.new()
-		curve.offsets = PackedFloat32Array([0.0, 0.5, 1.0])
-		curve.colors = PackedColorArray(GRADE)
-		env.adjustment_color_correction = GradientTexture1D.new()
-		env.adjustment_color_correction.gradient = curve
+	var curve := Gradient.new()
+	curve.offsets = PackedFloat32Array([0.0, 0.5, 1.0])
+	curve.colors = PackedColorArray(grade_stops(GRADE, compat))
+	env.adjustment_color_correction = GradientTexture1D.new()
+	env.adjustment_color_correction.gradient = curve
+	env.glow_enabled = true
+	env.glow_intensity = GLOW
+	env.glow_bloom = 0.0
+	env.glow_hdr_threshold = COMPAT_GLOW_THRESHOLD if compat else GLOW_THRESHOLD
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
+	for i in 7:  # wide, soft halo rather than a tight bright rim
+		env.set_glow_level(i, [0.0, 0.0, 1.0, 1.0, 0.6, 0.0, 0.0][i])
+	if not compat:
+		env.ssao_enabled = SSAO
+		env.ssao_radius = 1.5
+		env.ssao_intensity = 1.2
+		env.ssao_power = 1.5
+		env.volumetric_fog_density = 0.0  # daynight.gd turns it on while the sun is low
+		env.volumetric_fog_anisotropy = 0.7  # light scattered forwards: shafts read looking towards the sun
+		env.volumetric_fog_length = 80.0
+		env.volumetric_fog_ambient_inject = 0.0  # sunlight only, so the canopy's shadows carve the shafts
+		env.volumetric_fog_sky_affect = 0.0
+		# Cheaper than the defaults (medium SSAO, 64³ froxels): both stay soft by design.
+		RenderingServer.environment_set_ssao_quality(RenderingServer.ENV_SSAO_QUALITY_LOW, true, 0.5, 2, 50.0, 300.0)
+		RenderingServer.environment_set_volumetric_fog_volume_size(48, 48)
+	mist.mesh = QuadMesh.new()
+	mist_mat.shader = Shader.new()
+	mist_mat.shader.code = MIST_SHADER
+	mist_mat.render_priority = 100  # over water and particles
+	mist.material_override = mist_mat
+	mist.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mist.extra_cull_margin = 16384.0  # never culled: the vertex shader puts it on the whole screen
+	add_child(mist)
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)

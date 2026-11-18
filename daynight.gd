@@ -26,6 +26,22 @@ const NIGHT_HAZE := Color(0.1, 0.14, 0.3)
 const NIGHT_TOP := Color(0.04, 0.07, 0.2)
 const NIGHT_AMBIENT := Color(0.1, 0.14, 0.3)  # Compatibility renderer only (flat ambient)
 const FLASH := 0.7  # sky brightening by a close lightning strike
+# Grade by the hour: colour-correction curves (dark, mid, light stops, like world.GRADE, which is the
+# neutral bright midday) the curve leans towards: cool dawn, golden late afternoon, pink/violet dusk,
+# deep blue night. Overcast flattens them back towards midday's (not the night's).
+const DAWN_GRADE := [Color(0.03, 0.06, 0.16), Color(0.5, 0.51, 0.55), Color(0.98, 0.98, 1.0)]
+const GOLDEN_GRADE := [Color(0.05, 0.04, 0.08), Color(0.57, 0.5, 0.4), Color(1.0, 0.95, 0.82)]
+const DUSK_GRADE := [Color(0.09, 0.03, 0.14), Color(0.56, 0.46, 0.52), Color(1.0, 0.92, 0.9)]
+const NIGHT_GRADE := [Color(0.01, 0.04, 0.14), Color(0.43, 0.48, 0.62), Color(1.0, 0.95, 0.86)]  # warm lanterns
+# Morning valley mist (world.MIST_SHADER): extinction per m at the water level at its peak (around
+# sunrise, burnt off by mid-morning), by season, thicker after rain (weather.damp), lighter in the iso
+# view (whose camera looks down through 100 m of air).
+const MIST := 0.1
+const MIST_FALLOFF := 0.25  # per m: halves every ~2.8 m above the water, so it pools in the low ground
+const MIST_SEASON := [0.6, 1.0, 0.7, 0.8]  # by seasons.Season
+const MIST_ISO := 0.35
+# Sun shafts (Forward+, world.SUN_SHAFTS): volumetric fog density while the sun is low.
+const SHAFTS := 0.012
 # Milky Way: pole of its great circle (22° up towards SE, so the band arches 68° high from SW to NE),
 # core longitude along it from the SW horizon (24° up in the WSW), and glow colours/strength (sRGB).
 const GALAXY_POLE := Vector3(0.656, 0.375, 0.656)
@@ -41,6 +57,7 @@ var day := 0
 var held := {}  # physical keycode -> +1/-1 while a +/- key is down
 var _applied := -1  # minute of the day last applied
 var disc := DirectionalLight3D.new()  # sky-only: draws the sun/moon, lights nothing
+var compat := RenderingServer.get_current_rendering_method() == "gl_compatibility"
 
 
 func _ready() -> void:
@@ -152,9 +169,50 @@ func apply() -> void:
 	env.ambient_light_energy = world.seasons.base.ambient_energy * (1.0 + 6.0 * flash.r)
 	# The grade's saturation boost is for clear daylight: softer under overcast, in the low warm sun, at night.
 	env.adjustment_saturation = world.GRADE_SATURATION * (1.0 - 0.45 * dim - 0.25 * warm - 0.2 * (1.0 - day))
+	var curve: Gradient = env.adjustment_color_correction.gradient
+	var stops: Array = world.grade_stops(grade(dir, dim), compat)
+	for i in 3:
+		curve.set_color(i, stops[i])
+	# Mist: hazy colour, brighter and warmer towards the sun. Lighter in iso (its view turns the depth fog off).
+	var m: float = MIST * MIST_SEASON[world.seasons.season] * mist_amount(time, DECLINATION[world.seasons.season]) \
+		* (1.0 + (wx.damp if wx else 0.0)) * (1.0 if env.fog_enabled else MIST_ISO)
+	world.mist.visible = m > 0.0
+	world.mist_mat.set_shader_parameter("density", m)
+	world.mist_mat.set_shader_parameter("falloff", MIST_FALLOFF)
+	world.mist_mat.set_shader_parameter("colour", haze.lerp(Color.WHITE, 0.15 * day))
+	world.mist_mat.set_shader_parameter("glow", haze.lerp(sun.light_color, 0.6 * day))
+	world.mist_mat.set_shader_parameter("sun_dir", dir)
+	# Shafts while the sun is low and up, in clear air, not in iso (volumetric fog there: everything).
+	var shafts := SHAFTS * (1.0 - smoothstep(0.15, 0.55, dir.y)) * smoothstep(0.03, 0.15, dir.y) * (1.0 - dim)
+	env.volumetric_fog_enabled = world.SUN_SHAFTS and not compat and env.fog_enabled and shafts > 1e-4
+	env.volumetric_fog_density = shafts
 	if floori(time * 60.0) != _applied:  # the clock only shows minutes: don't relayout the HUD every frame
 		_applied = floori(time * 60.0)
 		world._update_hud()
+
+
+## Colour-correction stops for a sun direction and overcast: midday's world.GRADE leaning towards dawn
+## (sun in the east) or golden (west) as the sun gets low, dusk's violet around the horizon in the
+## evening, then the night's blue.
+func grade(dir: Vector3, dim: float) -> Array:
+	var morning := smoothstep(-0.2, 0.2, dir.x)
+	var low := (1.0 - smoothstep(0.08, 0.45, dir.y)) * (1.0 - 0.8 * dim)
+	var twilight := (1.0 - smoothstep(-0.06, 0.08, dir.y)) * (1.0 - 0.8 * dim)
+	var night := 1.0 - smoothstep(-0.3, -0.08, dir.y)
+	var out := []
+	for i in 3:
+		var c: Color = world.GRADE[i].lerp(GOLDEN_GRADE[i].lerp(DAWN_GRADE[i], morning), low)
+		c = c.lerp(DUSK_GRADE[i].lerp(DAWN_GRADE[i], morning), twilight)
+		out.append(c.lerp(NIGHT_GRADE[i], night))
+	return out
+
+
+## 0..1 morning mist by the hour: gathers in the second half of the night, thickest from an hour
+## before to an hour after sunrise, burnt off ~3.5 h after it.
+static func mist_amount(h: float, decl: float) -> float:
+	var rise := NOON - acos(clampf(-tan(LATITUDE) * tan(decl), -1.0, 1.0)) / TAU * 24.0
+	var t := fposmod(h - rise + 12.0, 24.0) - 12.0  # hours from sunrise
+	return smoothstep(-6.0, -1.0, t) * (1.0 - smoothstep(1.0, 3.5, t))
 
 
 ## Overcast sky: towards its own grey, darker.
