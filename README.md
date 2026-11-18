@@ -4,6 +4,8 @@ Un monde ouvert en 3D, sans fin, où l'on incarne une poule. Il est fait avec Go
 
 **[Jouer dans le navigateur](https://tdebarochez.github.io/openworld/)** : la version web est reconstruite et republiée à chaque push sur `main`.
 
+![La poule sur la place du marché de Brovade, en fin d'après-midi](docs/screenshot.jpg)
+
 Le monde se génère au fil des déplacements : prairies, forêts, lacs et montagnes, villages reliés par des routes, et repères visibles de loin. Il vit au rythme des heures, des saisons et de la météo. Tout ce qui le compose est généré par du code : le terrain, les modèles 3D et les sons. Le projet ne contient aucun asset fait à la main.
 
 ## Ce qu'on y trouve
