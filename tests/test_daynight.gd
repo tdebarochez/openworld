@@ -187,7 +187,7 @@ func _check():
 	assert(on[0] / on[1] > 4.0 * off[0] / off[1] and on[0] / on[1] > 0.05)
 	assert(d._stars().get_image().get_data() == img.get_data(), "deterministic")
 	# Village street lamps: on from dusk to dawn (lanterns glow, lights shown), off by day.
-	var lv: Dictionary = w.layout(w.cell_of(Vector3(133.7, 0, -143.1)))  # the village nearest the spawn
+	var lv: Dictionary = w.layout(w.cell_of(Vector3(52.6, 0, 82.5)))  # the village nearest the spawn
 	assert(not lv.lamps.is_empty())
 	w.seasons.set_season(w.seasons.Season.SUMMER)
 	for case in [[0.0, true], [13.0, false], [21.5, true], [6.0, false]]:  # summer: sunset 20:46, sunrise 5:14
