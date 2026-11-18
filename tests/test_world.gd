@@ -16,7 +16,7 @@ func _init() -> void:
 	var b: PackedVector3Array = w.zones[Vector2i(1, 0)].get_child(0).mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
 	for z in n:
 		assert(is_equal_approx(a[z * n + n - 1].y, b[z * n].y))
-	if not _check_shading(w):  # a failed assert() returns null from it without stopping the run
+	if not _check_shading(w) or not _check_mountains(w):  # a failed assert() returns null without stopping the run
 		quit(1)
 		return
 
@@ -256,6 +256,24 @@ func _init() -> void:
 	print("ALL OK")
 	w.free()
 	quit()
+
+
+## Mountains twice as high as the old hills (±20 m, summits ~32 m), while plains (hilliness ≤ 0.2:
+## villages), lakes and shores keep exactly the old heights.
+func _check_mountains(w):
+	var top := -INF
+	for x in range(-2000, 2000, 8):
+		for z in range(-2000, 2000, 8):
+			var h: float = w.height(x, z)
+			var n: float = w.noise.get_noise_2d(x, z)
+			var hill: float = w.hilliness(x, z)
+			var old := lerpf(n * 6.0 + 4.0, n * 35.0 + 5.0, hill)
+			top = maxf(top, h)
+			assert(hill > 0.2 or h == old, "plains changed at %d,%d" % [x, z])
+			assert((h < w.WATER_LEVEL) == (old < w.WATER_LEVEL), "shore moved at %d,%d" % [x, z])
+	print("highest summit within 2 km: %.1f m" % top)
+	assert(top >= 64.0, "mountains dropped back: %.1f m, old hills reached 32.3 m" % top)
+	return true
 
 
 ## Baked shading (world._shading, tools/make_trees.py bake_shade): meadow patches vary, hollows are
