@@ -23,7 +23,10 @@
     "lamp": "#ffcf8f",
     "ginger": "#d4935c",
     "soot": "#4b4346",
-    "ash": "#a19b94"
+    "ash": "#a19b94",
+    "feather": "#f7eedc",
+    "comb": "#d9463b",
+    "beak": "#efa43c"
   },
   "cats": ["ginger", "soot", "ash"],
   "ground": {
