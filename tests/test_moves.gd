@@ -2,8 +2,8 @@ extends SceneTree
 # Run: godot --headless --path . -s tests/test_moves.gd
 # Hen moves on a flat platform high above the terrain: Space held on the ground jumps once (no
 # flutter), a Space press in the air flaps (at most MAX_FLAPS per airtime, refilled on landing), the
-# left mouse button held while falling glides (sink capped, lands further than a plain jump), and
-# move_state follows along.
+# left mouse button held while falling glides (sink capped, lands further than a plain jump, banks
+# into turns), and move_state follows along.
 
 var w
 var p
@@ -185,6 +185,50 @@ func _run() -> void:
 		if p.is_on_floor():
 			break
 		await physics_frame
+
+	# A gliding hen banks into its turns (the mouse turns the body; right = right wing down, i.e. a
+	# negative tilt.rotation.z), more in a hard turn, capped, and levels out once the turn stops.
+	p.global_position = spot + Vector3(0, 30, 0)
+	p.velocity = Vector3.ZERO
+	_mouse(true)
+	await _frames(90)
+	var straight: float = p.tilt.rotation.z
+	var banks := {}
+	# rad/s of body turn, frames. The flight path lags a hard turn (GLIDE_STEER), so it levels later.
+	for turn in [[&"gentle right", -0.3, 90], [&"hard left", 1.2, 90], [&"level", 0.0, 180]]:
+		var peak := 0.0
+		for i in turn[2]:
+			p.rotate_y(turn[1] / 60.0)
+			await physics_frame
+			assert(p.move_state == &"glide", "state %s" % p.move_state)
+			peak = maxf(peak, absf(p.tilt.rotation.z))
+		assert(peak <= p.BANK_MAX + 0.001, "bank %f past the cap" % peak)
+		banks[turn[0]] = p.tilt.rotation.z
+	print("bank: straight %.3f, gentle right %.3f, hard left %.3f, 3 s after %.3f rad" % [
+		straight, banks[&"gentle right"], banks[&"hard left"], banks[&"level"]])
+	assert(absf(straight) < 0.01, "banked flying straight")
+	assert(banks[&"gentle right"] < -0.2, "no right bank")
+	assert(banks[&"hard left"] > -banks[&"gentle right"] + 0.1, "no (harder) left bank")
+	assert(absf(banks[&"level"]) < 0.02, "didn't level out")
+	# Iso view: the body snaps to the keys, the bank follows the flight path. W then W+D = a right turn.
+	p.set_view(p.View.ISO)
+	_key(KEY_W, true)
+	await _frames(60)
+	_key(KEY_D, true)
+	await _frames(20)
+	var iso_bank: float = p.tilt.rotation.z
+	_key(KEY_D, false)
+	_key(KEY_W, false)
+	p.set_view(p.View.FIRST)
+	_mouse(false)
+	print("iso bank turning right %.3f rad" % iso_bank)
+	assert(iso_bank < -0.2, "no right bank in iso")
+	for i in 600:
+		if p.is_on_floor():
+			break
+		await physics_frame
+	await _frames(60)
+	assert(p.is_on_floor() and absf(p.tilt.rotation.z) < 0.01, "banked on the ground")
 
 	# The click that takes the mouse back after Escape doesn't glide.
 	_key(KEY_ESCAPE, true)
