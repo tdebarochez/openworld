@@ -94,6 +94,10 @@ func jump() -> void:
 	_play(fx, preload("res://assets/sounds/jump.wav"), -6.0)
 
 
+func flap() -> void:
+	_play(fx, preload("res://assets/sounds/flap.wav"), -8.0)
+
+
 func _play(p: AudioStreamPlayer, s: AudioStream, db: float) -> void:
 	p.stream = s
 	p.volume_db = db
