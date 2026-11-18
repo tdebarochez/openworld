@@ -4,7 +4,8 @@ Run:  /Applications/Blender.app/Contents/MacOS/Blender --background --python too
 Then: godot --headless --path . --import
 
 Writes assets/flowers/<name>.glb and assets/flowers/flowers.json (bloom seasons, habitat, height, ...).
-Each model is one small clump of at most 80 triangles, origin at the base centre, Y up after export.
+Each model is one small clump of at most 80 triangles, origin at the base centre, Y up after export,
+darker at the foot (tools/make_trees.py bake_shade).
 Material slots are fixed: 0 = foliage (stems, leaves, buds), 1 = blossom (petals), 2 = heart (optional).
 The game hides slots >= 1 out of season, so slot 0 on its own must read as a plain green plant.
 Seeded, so re-running gives byte-identical files.
@@ -13,10 +14,15 @@ import json
 import math
 import os
 import random
+import sys
 
 import bmesh
 import bpy
 from mathutils import Vector
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True  # no __pycache__ in tools/
+from make_trees import bake_shade, export  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "flowers")
 FOLIAGE, BLOSSOM, HEART = 0, 1, 2
@@ -267,6 +273,7 @@ def build(name, fn, seed, colours):
     used = sorted({f.material_index for f in bm.faces})
     assert tris <= MAX_TRIS, f"{name}: {tris} triangles, budget is {MAX_TRIS}"
     assert used == list(range(len(colours))), f"{name}: slots used {used}, expected 0..{len(colours) - 1}"
+    bake_shade(bm, 0.15, strength=0.35, base=0.7)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     height = max(v.co.z for v in bm.verts)
@@ -276,10 +283,7 @@ def build(name, fn, seed, colours):
         mesh.materials.append(material(f"{name}_{slot}", colour))
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
-    bpy.ops.object.select_all(action="DESELECT")
-    obj.select_set(True)
-    bpy.ops.export_scene.gltf(filepath=os.path.join(OUT, name + ".glb"), export_format="GLB",
-                              use_selection=True, export_yup=True)
+    export(obj, os.path.join(OUT, name + ".glb"))
     return height
 
 

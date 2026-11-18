@@ -4,7 +4,8 @@ Run:  /Applications/Blender.app/Contents/MacOS/Blender --background --python too
 Then: godot --headless --path . --import
 
 Writes assets/trees/<species>_<n>.glb. Each model is one mesh with two materials (bark, leaves),
-trunk base at the origin, Y up after export. Seeded, so re-running gives the same models.
+trunk base at the origin, Y up after export, soft occlusion and a base-to-top gradient baked as
+vertex colour (bake_shade, also used by the other make_*.py). Seeded, so re-running gives the same models.
 Variants differ by shape parameters (branching, crown, tiers, lean), not just by seed.
 """
 import json
@@ -15,6 +16,7 @@ import random
 import bmesh
 import bpy
 from mathutils import Matrix, Vector, noise
+from mathutils.bvhtree import BVHTree
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "trees")
 BARK, LEAVES = 0, 1
@@ -80,6 +82,55 @@ def clump(bm, centre, radius, squash, rng, segs=7):
         v.co += (v.co - centre).normalized() * radius * rng.uniform(-0.18, 0.18)
     for f in {f for v in res["verts"] for f in v.link_faces}:
         f.material_index = LEAVES
+
+
+GOLDEN = math.pi * (3 - math.sqrt(5))
+# Fixed cosine-weighted directions around +Z (Fibonacci spiral): the same rays on every run.
+RAYS = [Vector((math.sqrt((i + 0.5) / 32) * math.cos(i * GOLDEN), math.sqrt((i + 0.5) / 32) * math.sin(i * GOLDEN),
+                math.sqrt(1 - (i + 0.5) / 32))) for i in range(32)]
+
+
+def bake_shade(bm, reach, strength=0.45, base=0.8):
+    """Soft painted shading baked as a grey vertex colour "Col" (per face corner), which world.gd
+    multiplies with the palette colour (and with a tree's instance colour on the leaves): ambient
+    occlusion from RAYS cast within `reach` m against the model and the ground (z = 0), nearer hits
+    darker, times a height gradient from `base` at the foot to 1 at the top. A fully enclosed corner
+    ends at 1 - strength. Stored as sRGB (world.gd sets vertex_color_is_srgb, so both renderers apply
+    the same multiplier). Flat faces use their face normal, smooth ones their vertex normal."""
+    bm.normal_update()
+    bm.verts.index_update()
+    tree = BVHTree.FromBMesh(bm)
+    top = max(v.co.z for v in bm.verts) or 1.0
+    layer = bm.loops.layers.float_color.new("Col")
+    memo = {}
+    for f in bm.faces:
+        for loop in f.loops:
+            n = loop.vert.normal if f.smooth else f.normal
+            key = (loop.vert.index, round(n.x, 4), round(n.y, 4), round(n.z, 4))
+            if key not in memo:
+                p = loop.vert.co + n * 0.02
+                t = n.orthogonal().normalized()
+                b = n.cross(t)
+                occ = 0.0
+                for r in RAYS:
+                    d = t * r.x + b * r.y + n * r.z
+                    _, hit_n, _, dist = tree.ray_cast(p, d, reach)
+                    if dist is not None and hit_n.dot(d) > 0:
+                        dist = None  # a back face: the corner is buried in another part (a beam on a wall)
+                    if d.z < 0 and p.z > 0 and p.z / -d.z < (dist or reach):
+                        dist = p.z / -d.z  # the ground
+                    if dist is not None:
+                        occ += 1 - dist / reach
+                memo[key] = (1 - strength * occ / len(RAYS)) * (base + (1 - base) * min(max(p.z / top, 0), 1) ** 0.6)
+            loop[layer] = (memo[key],) * 3 + (1.0,)
+
+
+def export(obj, path):
+    """Selected object as .glb with its baked shading (bake_shade) as COLOR_0."""
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True, export_yup=True,
+                              export_vertex_color="NAME", export_vertex_color_name="Col", export_all_vertex_colors=False)
 
 
 def lerp_radii(r0, r1, n):
@@ -190,7 +241,7 @@ SPECIES = {
 }
 
 
-def build(name, fn, params, seed, bark, leaves, out=OUT):
+def build(name, fn, params, seed, bark, leaves, out=OUT, reach=2.0):
     rng = random.Random(seed)
     bm = bmesh.new()
     fn(bm, rng, params)
@@ -201,6 +252,7 @@ def build(name, fn, params, seed, bark, leaves, out=OUT):
     rank = {f: i for i, f in enumerate(sorted(
         bm.faces, key=lambda f: (f.material_index, *(round(c, 5) for v in f.verts for c in v.co))))}
     bm.faces.sort(key=rank.__getitem__)
+    bake_shade(bm, reach)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     height = max(v.co.z for v in bm.verts)
@@ -210,10 +262,7 @@ def build(name, fn, params, seed, bark, leaves, out=OUT):
     mesh.materials.append(material(name + "_leaves", leaves))
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
-    bpy.ops.object.select_all(action="DESELECT")
-    obj.select_set(True)
-    bpy.ops.export_scene.gltf(filepath=os.path.join(out, name + ".glb"), export_format="GLB",
-                              use_selection=True, export_yup=True)
+    export(obj, os.path.join(out, name + ".glb"))
 
 
 if __name__ == "__main__":  # tools/make_bushes.py imports the helpers above

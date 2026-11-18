@@ -13,15 +13,21 @@ below y=0 so the house sits on uneven ground without gaps. The door is on the -Y
 Godot), within 1.2 m of x=0: world.gd puts a street lamp 2.4 m to its right, in front of everything
 lower than the lantern. world.gd's collision box is the wall and stone vertices between 0.25 and 1.2 m
 high (plinth top, foot of the walls), so what sticks out at that height (steps, firewood) is wood.
-No randomness, so re-running gives the same files.
+Soft occlusion (under eaves, balconies, in corners, at the foot of the walls) is baked as vertex
+colour by tools/make_trees.py bake_shade. No randomness, so re-running gives the same files.
 """
 import json
 import os
+import sys
 from math import cos, pi, radians, sin, tan
 
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True  # no __pycache__ in tools/
+from make_trees import bake_shade, export  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "houses")
 WALL, ROOF, WOOD, GLASS, STONE = range(5)
@@ -631,6 +637,7 @@ def build(name, fn, palette):
     bm.faces.sort(key=rank.__getitem__)
     for f in bm.faces:
         f.smooth = False
+    bake_shade(bm, 2.5, strength=0.5, base=0.85)  # reach: under the eaves and balconies
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     xs, ys, zs = ([v.co[i] for v in bm.verts] for i in range(3))
@@ -641,10 +648,7 @@ def build(name, fn, palette):
         mesh.materials.append(material(f"{name}_{slot}", palette[i], 0.4 if i == GLASS else 0.9))
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
-    bpy.ops.object.select_all(action="DESELECT")
-    obj.select_set(True)
-    bpy.ops.export_scene.gltf(filepath=os.path.join(OUT, name + ".glb"), export_format="GLB",
-                              use_selection=True, export_yup=True)
+    export(obj, os.path.join(OUT, name + ".glb"))
 
 
 bpy.ops.wm.read_factory_settings(use_empty=True)

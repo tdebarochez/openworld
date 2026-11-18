@@ -16,6 +16,9 @@ func _init() -> void:
 	var b: PackedVector3Array = w.zones[Vector2i(1, 0)].get_child(0).mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
 	for z in n:
 		assert(is_equal_approx(a[z * n + n - 1].y, b[z * n].y))
+	if not _check_shading(w):  # a failed assert() returns null from it without stopping the run
+		quit(1)
+		return
 
 	# Auto-generation within 200 m (zones (0,0) and (1,0) exist).
 	assert(w.dist_to_cell(Vector3(10, 0, 10), Vector2i.ZERO) == 0.0)
@@ -253,3 +256,78 @@ func _init() -> void:
 	print("ALL OK")
 	w.free()
 	quit()
+
+
+## Baked shading (world._shading, tools/make_trees.py bake_shade): meadow patches vary, hollows are
+## darker than crests, the ground under a tree darker than without it, zone seams and detail levels
+## agree, and models are darker at the foot than at the top.
+func _check_shading(w):
+	var n: int = w.ZONE_SIZE + 1
+	var half: int = w.ZONE_SIZE / 2
+	var uv0: PackedVector2Array = w.zones[Vector2i(0, 0)].get_child(0).mesh.surface_get_arrays(0)[Mesh.ARRAY_TEX_UV]
+	var uv1: PackedVector2Array = w.zones[Vector2i(1, 0)].get_child(0).mesh.surface_get_arrays(0)[Mesh.ARRAY_TEX_UV]
+	for z in n:
+		assert(uv0[z * n + n - 1].is_equal_approx(uv1[z * n]), "shading seam at z=%d" % z)
+	var lo := 9.0
+	var hi := -9.0
+	for v in uv0:
+		lo = minf(lo, v.x)
+		hi = maxf(hi, v.x)
+	assert(hi - lo > 0.8, "flat meadow: patch %.2f..%.2f" % [lo, hi])
+	# Hollows vs crests, away from trees: mean light of the 10 % most sunken vs most raised samples.
+	var cell := Vector2i(0, 0)
+	var mask: PackedByteArray = w.layout(cell).mask
+	var bare: PackedVector2Array = w._shading(cell, 1, mask, [], [])
+	var samples := []
+	for z in range(0, n, 2):
+		for x in range(0, n, 2):
+			if w.forest(x - half, z - half) < -0.05:
+				var h: float = w.height(x - half, z - half)
+				var r: float = w.HOLLOW_R
+				var around: float = (w.height(x - half + r, z - half) + w.height(x - half - r, z - half) + w.height(x - half, z - half + r) + w.height(x - half, z - half - r)) / 4.0
+				samples.append([around - h, bare[z * n + x].y])
+	samples.sort()
+	var k := samples.size() / 10
+	var crest: float = samples.slice(0, k).reduce(func(s, e): return s + e[1], 0.0) / k
+	var hollow: float = samples.slice(-k).reduce(func(s, e): return s + e[1], 0.0) / k
+	print("ground light: crests %.3f, hollows %.3f, meadow patch %.2f..%.2f" % [crest, hollow, lo, hi])
+	assert(hollow < crest - 0.03, "hollows should be darker than crests")
+	# Contact shade: the ground at a tree's foot is darker than with no objects.
+	var shaded := 0
+	for list in w.tree_transforms(cell, mask):
+		for t: Transform3D in list:
+			if absf(t.origin.x) < half - 5 and absf(t.origin.z) < half - 5:
+				var i := (roundi(t.origin.z) + half) * n + roundi(t.origin.x) + half
+				assert(uv0[i].y < bare[i].y - 0.1 or uv0[i].y <= w.SHADE_MIN + 0.001, "no shade under a tree")
+				shaded += 1
+	assert(shaded > 5)
+	# Every detail level agrees at the coarse grid's points (objects aside: bushes only exist in full).
+	var full: PackedVector2Array = w._shading(Vector2i(3, 2), 1, w.layout(Vector2i(3, 2)).mask, [], [])
+	var coarse: PackedVector2Array = w._shading(Vector2i(3, 2), w.COARSE_RES, w.layout(Vector2i(3, 2)).mask, [], [])
+	var cn: int = w.ZONE_SIZE / w.COARSE_RES + 1
+	for z in cn:
+		for x in cn:
+			assert(coarse[z * cn + x].is_equal_approx(full[z * w.COARSE_RES * n + x * w.COARSE_RES]), "coarse shading differs")
+	# Models: baked vertex colour darker at the foot than at the top.
+	for m: Mesh in [w.species[w.TreeKind.OAK * w.TREE_VARIANTS], w.house_meshes[0], w.rock_meshes[0], w.bush_meshes[0]]:
+		var top := m.get_aabb().end.y
+		var foot := [0.0, 0]
+		var crown := [0.0, 0]
+		for s in m.get_surface_count():
+			var arrays := m.surface_get_arrays(s)
+			var cols: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+			assert(cols.size() > 0, "%s has no baked shading" % m.resource_name)
+			assert(m.surface_get_material(s).vertex_color_use_as_albedo)
+			var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			for i in verts.size():
+				if verts[i].y > -0.01 and verts[i].y < top * 0.2:
+					foot[0] += cols[i].r
+					foot[1] += 1
+				elif verts[i].y > top * 0.8:
+					crown[0] += cols[i].r
+					crown[1] += 1
+		var f: float = foot[0] / foot[1]
+		var c: float = crown[0] / crown[1]
+		print("model shading foot %.2f, top %.2f" % [f, c])
+		assert(f < c - 0.05 and c > 0.8, "model should be darker at its foot")
+	return true

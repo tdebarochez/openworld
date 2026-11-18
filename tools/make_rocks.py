@@ -5,17 +5,23 @@ Then: godot --headless --path . --import
 
 Each rock is a convex hull (or a few fused hulls) of jittered points on a squashed sphere, flat shaded,
 one stone material plus an optional moss material on upward-facing facets. Origin at the base centre,
-Y up after export, the bottom ~15% of the rock sits below y=0 so it looks embedded in uneven ground.
+Y up after export, the bottom ~15% of the rock sits below y=0 so it looks embedded in uneven ground;
+darker towards the ground and in crevices (tools/make_trees.py bake_shade).
 Seeded, so re-running gives the same models.
 """
 import json
 import math
 import os
 import random
+import sys
 
 import bmesh
 import bpy
 from mathutils import Euler, Vector
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True  # no __pycache__ in tools/
+from make_trees import bake_shade, export  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "rocks")
 STONE, MOSS = 0, 1
@@ -102,6 +108,7 @@ def build(name, fn, seed, grey, moss=None):
     for f in bm.faces:
         f.smooth = False
         f.material_index = MOSS if moss and f.normal.z > 0.75 else STONE
+    bake_shade(bm, 0.8, strength=0.4, base=0.75)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     print(f"{name}: {len(bm.faces)} faces, {sum(len(f.verts) - 2 for f in bm.faces)} triangles, "
@@ -112,10 +119,7 @@ def build(name, fn, seed, grey, moss=None):
         mesh.materials.append(material(name + "_moss", moss))
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
-    bpy.ops.object.select_all(action="DESELECT")
-    obj.select_set(True)
-    bpy.ops.export_scene.gltf(filepath=os.path.join(OUT, name + ".glb"), export_format="GLB",
-                              use_selection=True, export_yup=True)
+    export(obj, os.path.join(OUT, name + ".glb"))
 
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
