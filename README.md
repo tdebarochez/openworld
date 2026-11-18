@@ -146,4 +146,6 @@ Les modèles 3D sont produits par des scripts Blender déterministes : les relan
 
 ## Licences
 
-Le moteur Godot est distribué sous licence MIT. Le jeu affiche sa notice de licence, et celles des composants qu'il embarque, avec la touche L.
+Le code, les scripts de génération et les assets générés de ce dépôt sont sous licence MIT : voir [LICENSE](LICENSE).
+
+Le moteur Godot est aussi distribué sous licence MIT. Le jeu affiche sa notice de licence, et celles des composants qu'il embarque, avec la touche L.
