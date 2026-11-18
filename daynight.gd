@@ -128,6 +128,7 @@ func apply() -> void:
 		sun.light_color = s.sun * MOON
 		sun.light_energy = s.energy * MOON_ENERGY * smoothstep(0.0, 0.15, -dir.y)
 	disc.basis = sun.basis
+	world.terrain_mat.set_shader_parameter("sun_dir", sun.basis.z)  # warm/cool slopes (seasons.TERRAIN_SHADER)
 	disc.light_color = sun.light_color
 	disc.light_energy = (1.0 + warm) * smoothstep(0.0, 0.05, dir.y) if dir.y >= 0.0 \
 		else 0.6 * smoothstep(0.0, 0.05, -dir.y)

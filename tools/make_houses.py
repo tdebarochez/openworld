@@ -651,12 +651,13 @@ def build(name, fn, palette):
     export(obj, os.path.join(OUT, name + ".glb"))
 
 
-bpy.ops.wm.read_factory_settings(use_empty=True)
-os.makedirs(OUT, exist_ok=True)
-# Palette names: walls, roof, wood, glass, stone.
-build("house_0", colombage, ["cream", "terracotta", "bark", "ink", "stone"])
-build("house_1", gable_front, ["sand", "slate", "bark", "ink", "stone"])
-build("house_2", manor, ["snow", "terracotta", "bark", "ink", "stone"])
-build("house_3", chalet, ["ochre", "slate", "bark", "ink", "stone"])
-build("house_4", farmhouse, ["ochre", "terracotta", "bark", "ink", "stone"])
-build("house_5", mazot, ["ochre", "slate", "bark", "ink", "stone"])
+if __name__ == "__main__":  # tools/make_cabins.py imports the helpers above
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    os.makedirs(OUT, exist_ok=True)
+    # Palette names: walls, roof, wood, glass, stone.
+    build("house_0", colombage, ["cream", "terracotta", "bark", "ink", "stone"])
+    build("house_1", gable_front, ["sand", "slate", "bark", "ink", "stone"])
+    build("house_2", manor, ["snow", "terracotta", "bark", "ink", "stone"])
+    build("house_3", chalet, ["ochre", "slate", "bark", "ink", "stone"])
+    build("house_4", farmhouse, ["ochre", "terracotta", "bark", "ink", "stone"])
+    build("house_5", mazot, ["ochre", "slate", "bark", "ink", "stone"])

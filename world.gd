@@ -4,6 +4,11 @@ extends Node3D
 
 const ZONE_SIZE := 128  # metres per side; 1 m grid so HeightMapShape3D needs no scaling
 const WATER_LEVEL := 0.0
+const MOUNTAIN := 34.0  # m added on the highest hills (height()): ~65 m summits instead of ~32
+const MOUNTAIN_FROM := 0.05  # broad-noise values over which that rise ramps in: above every shore,
+const MOUNTAIN_TOP := 0.7  # and as wide as that allows, for gentler flanks
+const TREE_LINE := 40.0  # m: no trees or bushes above; only conifers above 70 % of it
+const SNOW_LINE := 44.0  # m: peak ground (snow) above
 const VIEW_DIST := 200.0  # default view distance: zones closer than this get generated; fog is fully opaque here
 # P / O step the view distance and the density (multiplier of tree/rock/flower attempts) up,
 # Shift+P / Shift+O down, wrapping around at both ends.
@@ -41,6 +46,7 @@ const HOLLOW_R := 8  # m: ground lower than the ring this far round is a hollow 
 const HOLLOW_DARK := 0.22  # light lost 1.5 m or more below that ring
 const CREST_LIGHT := 0.06  # light gained 1.5 m or more above it
 const FOREST_DARK := 0.15  # light lost on the forest floor
+const FOREST_FRINGE := 0.3  # forest() band (~12 m) outside the edge where the grass already deepens
 const CONTACT := 0.3  # light lost at the foot of a tree, bush, rock or house wall
 const HOUSE_SHADE := 3.0  # m the shade reaches out from a house
 const SHADE_MIN := 0.62  # darkest the ground gets, however many shades overlap
@@ -52,7 +58,8 @@ const BUSH_EDGE := 0.15  # forest() band (~6 m) outside the edge (0) where bushe
 const ROCK_ATTEMPTS := 40  # ~6 rocks per zone on plains, ~30 in hills
 const ROCK_KINDS := 5  # tools/make_rocks.py; rock_3 is a pebble (no collision)
 const FLOWER_CLUSTERS := 40  # flower beds tried per zone; about half fit their species' habitat
-const VILLAGE_GRID := 400.0  # one candidate village per 400 m square, kept only on flat plains
+const VILLAGE_GRID := 280.0  # one candidate village per 280 m square, kept only on flat plains…
+const VILLAGE_SPACING := 200.0  # …and this far from every other village centre (< VILLAGE_GRID)
 const HOUSE_KINDS := 6  # tools/make_houses.py: 0-2 medieval, 3-5 chalets
 const HOUSE_VARIANTS := 3  # kinds per style
 const LAMP_HEIGHT := 3.4  # m, bottom of the lantern
@@ -63,8 +70,47 @@ const LAMP_ON_SUN := 0.05  # lamps light up once the sun is lower than this (dir
 enum Prop { BENCH, PLAIN_BENCH, PLANTER }  # village street furniture (_make_props); PLAIN = no backrest
 const BENCH_RADIUS := 8.0  # m from the village centre: the edge of the dirt square, between the lamps
 const PLANTER_TOP := 0.2  # m above the ground: the planter's soil, where its flowers stand
+# Village clearing (_mark_village): open ground VILLAGE_EDGE m past the roofs and the square's flower
+# clumps, its rim wobbling up to VILLAGE_WOBBLE m, then VILLAGE_FRINGE m over which the wild thins back in.
+const VILLAGE_EDGE := 4.0
+const VILLAGE_WOBBLE := 4.0
+const VILLAGE_FRINGE := 10.0
+const VILLAGE_REACH := 60.0  # m from a village centre its clearing can reach (roofs ≤ 17 + 2 × 9 m out, + 4 + 4 + 10)
+# Village cats (tools/make_cats.py): 0-3 per village, each on its own bench, coat = MultiMesh instance
+# colour (palette "cats"). The model's origin goes on the seat's front edge (_make_props' seat box).
+enum CatPose { SITTING, LYING }
+const MAX_CATS := 3
+const SEAT_TOP := 0.48  # m above the bench's foot
+const SEAT_FRONT := 0.21  # m from the bench's centre line to the seat's front edge (+Z)
+const CAT_SLIDE := 0.45  # m a cat sits at most from the middle of the bench, along it
+# The tail swings around Z from its pivot (UV, model space), as much as COLOR.a says (0 on the body,
+# 1 at the tip); the phase comes from the cat's position, so a zone's cats are one MultiMesh and no
+# script runs per frame. COLOR.rgb = baked shading × coat, sRGB like StandardMaterial3D's.
+const CAT_SHADER := """
+shader_type spatial;
+uniform float sway = 0.35;  // rad at the tip
+void vertex() {
+	float t = TIME * 1.4 + dot(MODEL_MATRIX[3].xz, vec2(1.3, 2.1));
+	float a = COLOR.a * sway * (sin(t) + 0.3 * sin(t * 2.7 + 1.0));
+	mat2 r = mat2(vec2(cos(a), sin(a)), vec2(-sin(a), cos(a)));
+	VERTEX.xy = UV + r * (VERTEX.xy - UV);
+	NORMAL.xy = r * NORMAL.xy;
+	if (!OUTPUT_IS_SRGB) {
+		COLOR.rgb = mix(pow((COLOR.rgb + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), COLOR.rgb * (1.0 / 12.92), lessThan(COLOR.rgb, vec3(0.04045)));
+	}
+}
+void fragment() {
+	ALBEDO = COLOR.rgb;
+	ROUGHNESS = 0.9;
+}
+"""
 # Village flowers: tulips (spring) in front of one of the summer bloomers, picked per planter or clump.
 const VILLAGE_FLOWERS := ["tulip", "poppy", "sunflower", "heather"]
+const CABIN_KINDS := 3  # tools/make_cabins.py: fisherman's hut, log cabin, stilt cabin, each with its pier
+const CABIN_GRID := 256.0  # one candidate lakeside cabin per square, kept only on a gentle dry shore
+const CABIN_TRIES := 16  # spots tried per square, each walked onto the nearest shoreline
+const CABIN_MARGIN := 24.0  # m: shorelines kept this far inside their square, so cabins stay apart
+const CABIN_CLEAR := 10.0  # m kept free of trees, bushes and rocks round a cabin and along its pier
 const ROAD_HALF := 2.0  # road half-width, metres
 const ROAD_LINKS := 2  # each village gets a road to its nearest villages…
 const ROAD_MAX := 900.0  # …within this distance
@@ -93,6 +139,7 @@ var map_tiles := {}  # Vector2i -> Image, top-down view of each generated zone
 var jobs := {}  # Vector2i -> {task: int, data: Dictionary} for zones being built on a worker thread
 var threaded := OS.has_feature("threads")  # false in the web export (no-threads build)
 var noise := FastNoiseLite.new()
+var broad := FastNoiseLite.new()  # `noise` without its fine octaves: the hills' large shape (mountains)
 var seasons := preload("res://seasons.gd").new()
 var terrain_mat: ShaderMaterial = seasons.terrain_mat  # recolours the vertex colours per season
 var ground: Array = seasons.GROUND[seasons.Season.SUMMER]  # sand, rock, peak, grass, road: baked into the terrain
@@ -114,6 +161,11 @@ var house_shapes: Array[BoxShape3D] = []  # per kind, the walls' box (eaves and 
 var house_centres: Array[Vector3] = []  # per kind, centre of that box in the house's frame
 var house_low: Array[Rect2] = []  # per kind, x/z extent of all lower than a lantern (balconies, porch, low eaves)
 var house_radius: Array[float] = []  # per kind, from the origin to the farthest roof corner (x/z)
+# cabin_0..2 then their piers pier_0..2 (tools/make_cabins.py); trimesh collision, so the piers' decks,
+# porches and stairs are walkable.
+var cabin_meshes: Array[Mesh] = []
+var cabin_shapes: Array[Shape3D] = []
+var cabin_boxes: Array[AABB] = []
 # Village street lamps: dark pole + lantern (lit at night), a shadow-casting OmniLight each in full zones.
 var lamp_meshes: Array[ArrayMesh] = []
 var lamp_glass := StandardMaterial3D.new()
@@ -123,10 +175,14 @@ var lamp_fade := true  # off in the iso view, whose camera is 100 m away (every 
 var prop_meshes: Array[ArrayMesh] = []  # per Prop
 var prop_shapes: Array[BoxShape3D] = []  # per Prop, the mesh's box
 var prop_centres: Array[Vector3] = []
+var cat_meshes: Array[ArrayMesh] = []  # per CatPose; surface 0 = coat (cat_mat), 1 = eyes, 2 = nose
+var cat_mat := ShaderMaterial.new()
+var cat_coats: Array = seasons.colours(seasons.palette.cats)
 # Memoised village sites / villages / roads (pure functions of the seed), shared by worker threads.
 var _sites := {}
 var _villages := {}
 var _roads := {}
+var _cabins := {}
 var _memo_lock := Mutex.new()
 var player: CharacterBody3D
 var hud := Label.new()
@@ -137,6 +193,9 @@ func _init() -> void:
 	noise.seed = 1337
 	noise.frequency = 0.004
 	noise.fractal_octaves = 5
+	broad.seed = noise.seed
+	broad.frequency = noise.frequency
+	broad.fractal_octaves = 2
 	seasons.world = self
 	add_child(seasons)
 	water_mat.albedo_color = Color(seasons.colour("water"), 0.75)
@@ -177,8 +236,22 @@ func _init() -> void:
 		house_low.append(low)
 		var full := m.get_aabb()
 		house_radius.append(Vector2(maxf(-full.position.x, full.end.x), maxf(-full.position.z, full.end.z)).length())
+	for file in ["cabin", "pier"]:
+		for k in CABIN_KINDS:
+			var m := _load_mesh("res://assets/cabins/%s_%d.glb" % [file, k])
+			cabin_meshes.append(m)
+			cabin_shapes.append(m.create_trimesh_shape())
+			cabin_boxes.append(m.get_aabb())
 	_make_lamp()
 	_make_props()
+	cat_mat.shader = Shader.new()
+	cat_mat.shader.code = CAT_SHADER
+	for pose in ["sitting", "lying"]:  # CatPose order
+		var m := _load_mesh("res://assets/cats/cat_%s.glb" % pose)
+		m.surface_set_material(0, cat_mat)
+		for s in [1, 2]:  # eyes and nose keep their colour on any coat (COLOR carries the instance's)
+			(m.surface_get_material(s) as StandardMaterial3D).vertex_color_use_as_albedo = false
+		cat_meshes.append(m)
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
 
@@ -230,7 +303,14 @@ func _ready() -> void:
 
 func height(x: float, z: float) -> float:
 	var n := noise.get_noise_2d(x, z)
-	return lerpf(n * 6.0 + 4.0, n * 35.0 + 5.0, hilliness(x, z))  # plains (1..7 m) → hills (±20 m)
+	var hill := hilliness(x, z)
+	var h := lerpf(n * 6.0 + 4.0, n * 35.0 + 5.0, hill)  # plains (-1..9 m) → hills (±20 m)
+	# Mountains: the hills' broad crests raised by up to MOUNTAIN m, twice as high at the top. Only the
+	# large-scale shape is raised (wide massifs, slopes ~1.5x steeper, not 2x), and nothing where
+	# hilliness ≤ 0.2 or below the crests: plains, villages, lakes and shores stay as they were.
+	if hill > 0.2:
+		h += MOUNTAIN * smoothstep(0.2, 1.0, hill) * smoothstep(MOUNTAIN_FROM, MOUNTAIN_TOP, broad.get_noise_2d(x, z))
+	return h
 
 
 ## 0 = plain, 1 = hills. Very low frequency (regions of ~1 km), sampled far from the height noise.
@@ -244,8 +324,9 @@ func _normal(x: float, z: float) -> Vector3:
 
 
 ## Tree placements in zone-local coords (origin on the ground), deterministic per seed + cell.
-## Returns one Array[Transform3D] per TreeKind.
-func tree_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
+## Returns one Array[Transform3D] per TreeKind. `only`: keep just the trees in this world x/z rect
+## (cheap: the others are dropped before any noise is sampled).
+func tree_transforms(cell: Vector2i, mask := PackedByteArray(), only := Rect2()) -> Array:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(Vector3i(noise.seed, cell.x, cell.y))
 	var half := ZONE_SIZE / 2.0
@@ -260,14 +341,16 @@ func tree_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 		var rot := rng.randf() * TAU
 		var wx := cell.x * ZONE_SIZE + lx
 		var wz := cell.y * ZONE_SIZE + lz
+		if only.has_area() and not only.has_point(Vector2(wx, wz)):
+			continue
 		var h := height(wx, wz)
-		if h < WATER_LEVEL + 2.0 or h > 20.0 or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
+		if h < WATER_LEVEL + 2.0 or h > TREE_LINE or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
 			continue
 		if forest(wx, wz) < 0.0:  # forests vs clearings
 			continue
 		# Species in groves: conifers up high, oak/birch patches below.
 		var v := noise.get_noise_2d(wx * 2.0 - 7000.0, wz * 2.0)
-		var kind := TreeKind.CONIFER if h > 14.0 or v < -0.1 else (TreeKind.OAK if v < 0.1 else TreeKind.BIRCH)
+		var kind := TreeKind.CONIFER if h > TREE_LINE * 0.7 or v < -0.1 else (TreeKind.OAK if v < 0.1 else TreeKind.BIRCH)
 		# Variant from position, not the RNG, so adding variants never moved existing trees.
 		var variant := hash(Vector3i(roundi(wx * 10.0), roundi(wz * 10.0), 7)) % TREE_VARIANTS
 		out[kind * TREE_VARIANTS + variant].append(Transform3D(Basis(Vector3.UP, rot).scaled(Vector3.ONE * s), Vector3(lx, h, lz)))
@@ -305,7 +388,7 @@ func bush_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 			if sp[2] >= 1.0 - absf(e) / (BUSH_EDGE if e < 0.0 else BUSH_EDGE * 0.5):  # 1 at the edge → 0 at the band's end
 				continue
 			var h := height(wx, wz)
-			if h < WATER_LEVEL + 1.0 or h > 20.0 or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
+			if h < WATER_LEVEL + 1.0 or h > TREE_LINE or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
 				continue
 			var variant := hash(Vector3i(roundi(wx * 10.0), roundi(wz * 10.0), 8)) % BUSH_VARIANTS
 			out[kind * BUSH_VARIANTS + variant].append(Transform3D(Basis(Vector3.UP, sp[4]).scaled(Vector3.ONE * sp[3]), Vector3(lx, h, lz)))
@@ -355,17 +438,32 @@ func flower_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 
 
 ## Centre of the village in the VILLAGE_GRID square `g`, or {} when its spot isn't a dry flat plain
-## (or the dice say no). Pure function of the seed: every zone computes the same villages and roads.
+## (or the dice say no, or it crowds a neighbour). Pure function of the seed: every zone computes the same villages and roads.
 func village_site(g: Vector2i) -> Dictionary:
 	return _memo(_sites, g, _village_site.bind(g))
 
 
 func _village_site(g: Vector2i) -> Dictionary:
+	var s := _village_spot(g)
+	if s.is_empty():
+		return s
+	# Too close to a neighbour's spot (only the 8 squares around can be, VILLAGE_SPACING < VILLAGE_GRID):
+	# the lower seed keeps its village. Even a spot that loses elsewhere still clears this one, so
+	# every pair of villages is VILLAGE_SPACING apart whatever the order zones ask for them.
+	for d in [Vector2i(-1, -1), Vector2i(0, -1), Vector2i(1, -1), Vector2i(-1, 0), Vector2i(1, 0), Vector2i(-1, 1), Vector2i(0, 1), Vector2i(1, 1)]:
+		var o := _village_spot(g + d)
+		if not o.is_empty() and o.centre.distance_to(s.centre) < VILLAGE_SPACING and o.seed < s.seed:
+			return {}
+	return s
+
+
+## The candidate spot of square `g` before spacing: {} unless the dice say yes and it's a dry flat plain.
+func _village_spot(g: Vector2i) -> Dictionary:
 	var h := hash(Vector3i(noise.seed + 3, g.x, g.y))
 	if h % 10 >= 7:
 		return {}
-	var c := (Vector2(g) + Vector2(0.25 + 0.5 * float((h >> 8) & 0xFF) / 255.0,
-		0.25 + 0.5 * float((h >> 16) & 0xFF) / 255.0)) * VILLAGE_GRID
+	var c := (Vector2(g) + Vector2(0.1 + 0.8 * float((h >> 8) & 0xFF) / 255.0,
+		0.1 + 0.8 * float((h >> 16) & 0xFF) / 255.0)) * VILLAGE_GRID
 	if hilliness(c.x, c.y) > 0.2 or height(c.x, c.y) < WATER_LEVEL + 1.5 or _normal(c.x, c.y).y < 0.95:
 		return {}
 	return {"centre": c, "seed": h}
@@ -452,10 +550,19 @@ func _village(g: Vector2i) -> Dictionary:
 				var l: Vector3 = hs[0] + rot * (lp + Vector3((j % 4 - 1.5) * 0.3 + rng.randfn(0, 0.03), 0, (j / 4 - 0.5) * 0.28))
 				bed.append([Vector3(l.x, top, l.z), rng.randf() * TAU, pair[j / 4], rng.randf_range(0.8, 1.15)])
 			if not _near_line(p, roads, ROAD_HALF + 1.0) and _far_from(p, lamps + props, 1.0) \
-					and bed.all(func(b): return not in_house(Vector2(b[0].x, b[0].z), houses, 0.1)):
+					and bed.all(func(b): return not in_house(Vector2(b[0].x, b[0].z), houses, 0.1) and _far_from(Vector2(b[0].x, b[0].z), lamps, 0.6)):
 				props.append([Vector3(p.x, top - PLANTER_TOP, p.y), hs[1], Prop.PLANTER])
 				plants.append_array(bed)
-	return {"centre": c, "houses": houses, "lamps": lamps, "props": props, "flowers": plants}
+	# Cats from their own dice, so changes above never move them: each on a different bench.
+	var cat_rng := RandomNumberGenerator.new()
+	cat_rng.seed = hash(site.seed + 6)
+	var free_benches := props.filter(func(o): return o[2] != Prop.PLANTER)
+	var cats := []  # [bench position, bench yaw, CatPose, coat (cat_coats index), m along the seat]
+	for i in mini(cat_rng.randi_range(0, MAX_CATS), free_benches.size()):
+		var b: Array = free_benches.pop_at(cat_rng.randi() % free_benches.size())
+		cats.append([b[0], b[1], cat_rng.randi() % CatPose.size(), cat_rng.randi() % cat_coats.size(),
+			cat_rng.randf_range(-CAT_SLIDE, CAT_SLIDE)])
+	return {"centre": c, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats}
 
 
 ## True if `p` (world x/z) is at least `r` from every [world position, …] of `things`.
@@ -538,6 +645,91 @@ func _road(a: Vector2i, b: Vector2i) -> PackedVector2Array:
 	return out
 
 
+## Lakeside cabin in the CABIN_GRID square `g`, or {} when no try found a gentle shore clear of
+## villages and roads: {"kind": 0..CABIN_KINDS-1, "cabin": [world position, yaw], "pier": [world
+## position, yaw]}. The cabin stands on dry ground facing the water (+Z), its pier starts on the
+## shoreline at the water level and reaches out over the lake. Pure function of the seed, like village_site.
+func cabin_site(g: Vector2i) -> Dictionary:
+	return _memo(_cabins, g, _cabin_site.bind(g))
+
+
+func _cabin_site(g: Vector2i) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3i(noise.seed + 6, g.x, g.y))
+	var first := rng.randi()
+	var inner := Rect2(Vector2(g) * CABIN_GRID, Vector2.ONE * CABIN_GRID).grow(-CABIN_MARGIN)
+	for i in CABIN_TRIES:
+		var kind := (first + i * CABIN_KINDS / CABIN_TRIES) % CABIN_KINDS  # all kinds in turn: the big ones fit fewer shores
+		var cb := cabin_boxes[kind]
+		var pb := cabin_boxes[CABIN_KINDS + kind]
+		var s := inner.position + Vector2(rng.randf(), rng.randf()) * inner.size
+		var gap := rng.randf_range(3.0, 6.0)  # m of shore between the cabin's front and the water
+		# Newton steps onto the shoreline (height = WATER_LEVEL) along the slope.
+		var grad := Vector2.ZERO
+		for j in 6:
+			grad = Vector2(height(s.x + 0.5, s.y) - height(s.x - 0.5, s.y), height(s.x, s.y + 0.5) - height(s.x, s.y - 0.5))
+			if grad.length_squared() < 1e-4:
+				break
+			s -= (grad * (height(s.x, s.y) - WATER_LEVEL) / grad.length_squared()).limit_length(40.0)
+		if absf(height(s.x, s.y) - WATER_LEVEL) > 0.05 or grad.length_squared() < 1e-4 or not inner.has_point(s):
+			continue
+		var f := -grad.normalized()  # downhill, towards the water: the cabin's and pier's +Z
+		var r := Vector2(f.y, -f.x)  # their +X
+		var at := func(o: Vector2, x: float, z: float) -> float:
+			var q: Vector2 = o + r * x + f * z
+			return height(q.x, q.y) - WATER_LEVEL
+		# Pier: a gentle bank under its shore end, its far corners over water deep enough for the posts,
+		# no land under the walkway.
+		var ok: bool = at.call(s, 0.0, -1.0) < 0.35 and at.call(s, pb.position.x, pb.end.z) < -0.5 \
+			and at.call(s, pb.end.x, pb.end.z) < -0.5
+		for z in range(1, ceili(pb.end.z)):
+			ok = ok and at.call(s, 0.0, z) < 0.0
+		# Cabin: every footprint corner dry, at most 0.4 m above the centre (the floor is ~0.5 m up) and
+		# 0.75 m below it (posts, steps and stone go down further).
+		var c := s - f * (cb.end.z + gap)
+		var hc := height(c.x, c.y) - WATER_LEVEL
+		for x in [cb.position.x, cb.end.x]:
+			for z in [cb.position.z, cb.end.z]:
+				var hq: float = at.call(c, x, z)
+				ok = ok and hq > 0.35 and hq - hc < 0.4 and hc - hq < 0.75
+		if not ok:
+			continue
+		var vg := Vector2i((c / VILLAGE_GRID).floor())
+		var far := true  # from every village square (its houses reach ~35 m out)
+		for dx in range(-1, 2):
+			for dz in range(-1, 2):
+				var v := village_site(vg + Vector2i(dx, dz))
+				far = far and (v.is_empty() or v.centre.distance_to(c) > 70.0)
+		var roads := _roads_near(c, 30.0)
+		if not far or _near_line(c, roads, CABIN_CLEAR + ROAD_HALF) or _near_line(s, roads, CABIN_CLEAR + ROAD_HALF):
+			continue
+		var yaw := atan2(f.x, f.y)
+		return {"kind": kind, "cabin": [Vector3(c.x, WATER_LEVEL + hc - 0.1, c.y), yaw], "pier": [Vector3(s.x, WATER_LEVEL, s.y), yaw]}
+	return {}
+
+
+## Roads (polylines) that may pass within `r` m of world x/z point `p`.
+func _roads_near(p: Vector2, r: float) -> Array:
+	var out := []
+	var reach := ROAD_MAX + VILLAGE_GRID
+	var lo := Vector2i(((p - Vector2.ONE * reach) / VILLAGE_GRID).floor())
+	var hi := Vector2i(((p + Vector2.ONE * reach) / VILLAGE_GRID).floor())
+	for gx in range(lo.x, hi.x + 1):
+		for gz in range(lo.y, hi.y + 1):
+			var g := Vector2i(gx, gz)
+			var sa := village_site(g)
+			if sa.is_empty():
+				continue
+			for d in LINK_OFFSETS:
+				var sb := village_site(g + d)
+				if d.x < 0 or (d.x == 0 and d.y < 0) or sb.is_empty():
+					continue  # each pair once
+				var bb := Rect2(sa.centre, Vector2.ZERO).expand(sb.centre)
+				if bb.grow(sa.centre.distance_to(sb.centre) * 0.25 + r).has_point(p):
+					out.append(road(g, g + d))
+	return out
+
+
 ## Everything man-made touching zone `cell`: the roads/houses mask (per terrain vertex: FREE, CLEAR,
 ## ROAD), the zone's houses per kind (zone-local transforms) and the houses near it. Thread-safe.
 func layout(cell: Vector2i) -> Dictionary:
@@ -556,6 +748,9 @@ func layout(cell: Vector2i) -> Dictionary:
 	var plants := []  # per flower kind
 	for k in flowers.size():
 		plants.append([] as Array[Transform3D])
+	var cats := []  # per CatPose: [transforms, coat colours]
+	for k in CatPose.size():
+		cats.append([[] as Array[Transform3D], []])
 	var near := []  # every house of the villages around, even across the edge: [world position, yaw, kind]
 	var reach := half + ROAD_MAX + VILLAGE_GRID  # a road touching this zone starts within this range
 	var lo := Vector2i(((origin - Vector2.ONE * reach) / VILLAGE_GRID).floor())
@@ -583,9 +778,9 @@ func layout(cell: Vector2i) -> Dictionary:
 		for gz in range(lo.y, hi.y + 1):
 			var g := Vector2i(gx, gz)
 			var v := village(g)
-			if v.is_empty() or (v.centre - origin).abs().x > half + 40.0 or (v.centre - origin).abs().y > half + 40.0:
+			if v.is_empty() or (v.centre - origin).abs().x > half + VILLAGE_REACH or (v.centre - origin).abs().y > half + VILLAGE_REACH:
 				continue
-			_mark_segment(mask, v.centre - origin, v.centre - origin, 7.0, 9.0)  # the square
+			_mark_village(mask, v, origin)
 			near.append_array(v.houses)
 			for hs in v.houses:
 				var lp := Vector2(hs[0].x, hs[0].z) - origin
@@ -604,7 +799,30 @@ func layout(cell: Vector2i) -> Dictionary:
 				var fl: Vector3 = f[0] - Vector3(origin.x, 0, origin.y)
 				if absf(fl.x) < half and absf(fl.z) < half:
 					plants[f[2]].append(Transform3D(Basis(Vector3.UP, f[1]).scaled(Vector3.ONE * f[3]), fl))
-	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "near_houses": near}
+			for cat in v.cats:  # in the zone of its bench
+				var bl: Vector3 = cat[0] - Vector3(origin.x, 0, origin.y)
+				if absf(bl.x) < half and absf(bl.z) < half:
+					var rot := Basis(Vector3.UP, cat[1])
+					cats[cat[2]][0].append(Transform3D(rot, bl + rot * Vector3(cat[4], SEAT_TOP, SEAT_FRONT)))
+					cats[cat[2]][1].append(cat_coats[cat[3]])
+	var cabins := []  # per cabin_meshes entry (cabins, then piers), zone-local; each in the zone holding its origin
+	for k in CABIN_KINDS * 2:
+		cabins.append([] as Array[Transform3D])
+	var reach_c := half + 40.0  # a cabin's clearing reaches ~30 m from its origin
+	for gx in range(floori((origin.x - reach_c) / CABIN_GRID), floori((origin.x + reach_c) / CABIN_GRID) + 1):
+		for gz in range(floori((origin.y - reach_c) / CABIN_GRID), floori((origin.y + reach_c) / CABIN_GRID) + 1):
+			var cs := cabin_site(Vector2i(gx, gz))
+			if cs.is_empty():
+				continue
+			var a: Vector3 = cs.cabin[0]
+			var b: Vector3 = cs.pier[0] + Basis(Vector3.UP, cs.pier[1]) * Vector3(0, 0, cabin_boxes[CABIN_KINDS + cs.kind].end.z)
+			_mark_segment(mask, Vector2(a.x, a.z) - origin, Vector2(b.x, b.z) - origin, -1.0, CABIN_CLEAR)
+			for j in 2:
+				var it: Array = cs.cabin if j == 0 else cs.pier
+				if cell_of(it[0]) == cell:
+					cabins[j * CABIN_KINDS + cs.kind].append(Transform3D(Basis(Vector3.UP, it[1]), it[0] - Vector3(origin.x, 0, origin.y)))
+	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats, "near_houses": near,
+		"cabins": cabins}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -623,6 +841,53 @@ func _mark_segment(mask: PackedByteArray, a: Vector2, b: Vector2, road_r: float,
 			if d <= road_r:
 				mask[i] = ROAD
 			elif d <= clear_r and mask[i] == FREE:
+				mask[i] = CLEAR
+
+
+## Marks village `v`'s dirt square (7 m) as ROAD and its clearing as CLEAR (zone-local mask, zone centre
+## `origin`). The clearing's rim runs from house to house by angle, VILLAGE_EDGE past each roof, so the
+## gaps between houses, the square's furniture and the doorsteps are all open ground; noise makes it
+## wobble, and past it a share of the vertices growing over VILLAGE_FRINGE m stays FREE (world-hashed,
+## so neighbouring zones agree): the woods thin in instead of stopping at a wall.
+func _mark_village(mask: PackedByteArray, v: Dictionary, origin: Vector2) -> void:
+	var c: Vector2 = v.centre
+	var floor_r := BENCH_RADIUS + 2.5 + VILLAGE_EDGE  # the bench flower clumps reach ~2.3 m past the benches
+	var rim := []  # [angle, distance] of each house's farthest roof edge from the centre, sorted by angle
+	for hs in v.houses:
+		var d := Vector2(hs[0].x, hs[0].z) - c
+		rim.append([d.angle(), maxf(d.length() + house_radius[hs[2]] + VILLAGE_EDGE, floor_r)])
+	rim.sort()
+	var reach: float = rim.reduce(func(m, e): return maxf(m, e[1]), floor_r) + VILLAGE_WOBBLE + VILLAGE_FRINGE
+	var n := ZONE_SIZE + 1
+	var half := ZONE_SIZE / 2
+	var lc := c - origin
+	for z in range(maxi(floori(lc.y - reach) + half, 0), mini(ceili(lc.y + reach) + half, n - 1) + 1):
+		for x in range(maxi(floori(lc.x - reach) + half, 0), mini(ceili(lc.x + reach) + half, n - 1) + 1):
+			var i := z * n + x
+			var off := Vector2(x - half, z - half) - lc
+			var d := off.length()
+			if d <= 7.0:
+				mask[i] = ROAD
+				continue
+			if mask[i] != FREE or d > reach:
+				continue
+			var r := floor_r
+			if not rim.is_empty():  # interpolate between the houses on either side of this angle
+				var a := off.angle()
+				var k := 0
+				while k < rim.size() and rim[k][0] < a:
+					k += 1
+				var p: Array = rim[k - 1]  # k = 0 wraps to the last house
+				var q: Array = rim[k % rim.size()]
+				var span := wrapf(q[0] - p[0], 0.0, TAU)
+				r = lerpf(p[1], q[1], wrapf(a - p[0], 0.0, TAU) / span if span > 0.0 else 0.0)
+			if d < r - VILLAGE_WOBBLE:
+				mask[i] = CLEAR
+				continue
+			var wx := x - half + origin.x
+			var wz := z - half + origin.y
+			var e := d - r - VILLAGE_WOBBLE * noise.get_noise_2d(wx * 8.0 - 11000.0, wz * 8.0)  # m past the rim
+			if e < 0.0 or (e < VILLAGE_FRINGE and float(hash(Vector2i(roundi(wx), roundi(wz))) & 0xFFFF) / 65536.0 * VILLAGE_FRINGE > e):
 				mask[i] = CLEAR
 
 
@@ -878,7 +1143,9 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 	var trees := tree_transforms(cell, mask)
 	var rocks := rock_transforms(cell, mask) if full else []
 	var bushes := bush_transforms(cell, mask) if full else []
-	var uvs := _shading(cell, res, mask, [[trees, 2.8], [bushes, 1.4], [rocks, 1.3]], lay.near_houses)
+	# Tree shade across zone edges (~1 ms): not worth it on the coarse 4 m grid, a kilometre away.
+	var tree_shade := [trees, 2.8] if detail == Detail.COARSE else [trees + [_edge_trees(cell, mask)], 2.8, true]
+	var uvs := _shading(cell, res, mask, [tree_shade, [bushes, 1.4], [rocks, 1.3]], lay.near_houses)
 
 	var idx := PackedInt32Array()
 	for z in cells:
@@ -909,10 +1176,11 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 	for k in flw.size():
 		flw[k].append_array(lay.flowers[k])  # village beds share the wild flowers' MultiMesh
 	return {"cell": cell, "density": dens, "detail": detail, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
-		"rocks": rocks, "flowers": flw, "houses": lay.houses,
+		"rocks": rocks, "flowers": flw, "houses": lay.houses, "cabins": lay.cabins,
 		"bushes": bushes,
 		"lamps": lay.lamps if full else ([] as Array[Transform3D]), "props": lay.props if full else [],
-		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask, res)}
+		"cats": lay.cats if full else [],
+		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses + lay.cabins.slice(0, CABIN_KINDS), mask, res)}
 
 
 ## Top-down MAP_PX² image of a zone (1 px = 4 m): ground colours, hill shading, water, trees, rocks.
@@ -1027,6 +1295,18 @@ func _attach_zone(d: Dictionary) -> void:
 			hcs.transform = t * Transform3D(Basis(), house_centres[kind])
 			body.add_child(hcs)
 
+	var all_cabins: Array = d.cabins  # cabins, then piers (collision: their trimesh)
+	for k in all_cabins.size():
+		var list: Array[Transform3D] = all_cabins[k]
+		if list.is_empty():
+			continue
+		zone.add_child(_multimesh(cabin_meshes[k], list))
+		for t in list if body else []:
+			var ccs := CollisionShape3D.new()
+			ccs.shape = cabin_shapes[k]
+			ccs.transform = t
+			body.add_child(ccs)
+
 	var lamps: Array[Transform3D] = d.lamps
 	if not lamps.is_empty():
 		zone.add_child(_multimesh(lamp_meshes[0], lamps))
@@ -1066,6 +1346,11 @@ func _attach_zone(d: Dictionary) -> void:
 			pcs.shape = prop_shapes[kind]
 			pcs.transform = t * Transform3D(Basis(), prop_centres[kind])
 			body.add_child(pcs)
+
+	var all_cats: Array = d.cats  # full zones only, on the benches; no collision (the bench has it)
+	for pose in all_cats.size():
+		if not all_cats[pose][0].is_empty():
+			zone.add_child(_multimesh(cat_meshes[pose], all_cats[pose][0], PackedColorArray(all_cats[pose][1])))
 
 	var all_flowers: Array = d.flowers
 	for kind in all_flowers.size():
@@ -1160,9 +1445,29 @@ func _ground_color(h: float, up: float) -> Color:
 		return ground[0]  # sand / lakebed
 	if up < 0.8:
 		return ground[1]  # steep = rock
-	if h > 22.0:
+	if h > SNOW_LINE:
 		return ground[2]  # peaks
 	return ground[3]  # grass
+
+
+## The 8 neighbouring zones' trees whose contact shade reaches into `cell` (zone-local coords), so
+## a tree's shade carries on across the edge. Their own layout masks aren't built (too slow): the
+## zone's mask at the nearest edge point stands in for them.
+## ponytail: may differ where a road or village clearing crosses the edge right there (a stray or
+## missing half shade); build the neighbours' masks if that ever shows.
+func _edge_trees(cell: Vector2i, mask: PackedByteArray) -> Array[Transform3D]:
+	var r := 2.8 * 1.4  # largest tree shade (_build_zone's radius × the largest tree scale)
+	var origin := Vector2(cell) * ZONE_SIZE
+	var only := Rect2(origin - Vector2.ONE * (ZONE_SIZE / 2.0 + r), Vector2.ONE * (ZONE_SIZE + 2.0 * r))
+	var out: Array[Transform3D] = []
+	for d in [Vector2i(-1, -1), Vector2i(0, -1), Vector2i(1, -1), Vector2i(-1, 0), Vector2i(1, 0), Vector2i(-1, 1), Vector2i(0, 1), Vector2i(1, 1)]:
+		var shift := Vector3(d.x, 0, d.y) * ZONE_SIZE
+		for list in tree_transforms(cell + d, PackedByteArray(), only):
+			for t: Transform3D in list:
+				var l := t.translated(shift)
+				if not _blocked(mask, l.origin.x, l.origin.z):
+					out.append(l)
+	return out
 
 
 ## Baked terrain shading per vertex (`res` m grid), read by seasons.TERRAIN_SHADER as UV:
@@ -1194,28 +1499,29 @@ func _shading(cell: Vector2i, res: int, mask: PackedByteArray, objects: Array, h
 				around += lh[i + d] + lh[i + d * g] + lh[i + d * (g + 1)] + lh[i + d * (g - 1)]
 			var hollow := around / 8.0 - lh[i]  # > 0 in a hollow or at the foot of a slope, < 0 on a crest
 			var l := 1.0 - HOLLOW_DARK * smoothstep(0.0, 1.5, hollow) + CREST_LIGHT * smoothstep(0.0, 1.5, -hollow)
-			var f := 0.0  # forest floor: where trees grow (tree_transforms' tests, bar the slope)
-			if lh[i] > WATER_LEVEL + 2.0 and lh[i] < 20.0 and mask[z * SHADE_STEP * (ZONE_SIZE + 1) + x * SHADE_STEP] == FREE:
-				f = smoothstep(0.0, 0.3, forest(wx, wz))
+			var f := 0.0  # forest floor: where trees grow (tree_transforms' tests, bar the slope), and its fringe
+			if lh[i] > WATER_LEVEL + 2.0 and lh[i] < TREE_LINE and mask[z * SHADE_STEP * (ZONE_SIZE + 1) + x * SHADE_STEP] == FREE:
+				f = smoothstep(-FOREST_FRINGE, 0.3, forest(wx, wz))
 			light.append(l * (1.0 - FOREST_DARK * f))
 			# Meadow patches ~120 m wide, broken up by smaller ones (~30 m); deep green under the trees.
 			var p := noise.get_noise_2d(wx * 2.0 + 9000.0, wz * 2.0) * 1.6 + noise.get_noise_2d(wx * 8.0 - 3000.0, wz * 8.0) * 1.0
-			patch.append(lerpf(clampf(p, -1.0, 1.0), -1.0, 0.7 * f))
+			patch.append(lerpf(clampf(p, -1.0, 1.0), -1.0, 0.85 * f))
 	var n := ZONE_SIZE / res + 1
 	var contact := PackedFloat32Array()
 	contact.resize(n * n)
 	contact.fill(1.0)
-	for group in objects:
+	for group in objects:  # [lists, radius, true when the neighbours' objects near the edge are included]
+		var across: bool = group.size() > 2 and group[2]
 		for list in group[0]:
 			for t: Transform3D in list:
 				var r: float = group[1] * t.basis.x.length()
-				# ponytail: no shade for objects whose shade would cross the zone edge (the neighbour can't
-				# know them, half a blob would show); compute neighbours' placements if the gaps show.
-				if absf(t.origin.x) > half - r or absf(t.origin.z) > half - r:
+				# Bushes and rocks only exist in FULL zones: no shade crossing the edge (half a blob would
+				# show against a LIGHT neighbour). Trees exist at every level: see _edge_trees.
+				if not across and (absf(t.origin.x) > half - r or absf(t.origin.z) > half - r):
 					continue
 				var c := Vector2(t.origin.x, t.origin.z)
-				for z in range(ceili((c.y - r + half) / res), floori((c.y + r + half) / res) + 1):
-					for x in range(ceili((c.x - r + half) / res), floori((c.x + r + half) / res) + 1):
+				for z in range(maxi(ceili((c.y - r + half) / res), 0), mini(floori((c.y + r + half) / res), n - 1) + 1):
+					for x in range(maxi(ceili((c.x - r + half) / res), 0), mini(floori((c.x + r + half) / res), n - 1) + 1):
 						var d2 := Vector2(x * res - half, z * res - half).distance_squared_to(c) / (r * r)
 						if d2 < 1.0:
 							contact[z * n + x] *= 1.0 - CONTACT * (1.0 - d2) * (1.0 - d2)

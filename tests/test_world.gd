@@ -16,7 +16,7 @@ func _init() -> void:
 	var b: PackedVector3Array = w.zones[Vector2i(1, 0)].get_child(0).mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
 	for z in n:
 		assert(is_equal_approx(a[z * n + n - 1].y, b[z * n].y))
-	if not _check_shading(w):  # a failed assert() returns null from it without stopping the run
+	if not _check_shading(w) or not _check_mountains(w):  # a failed assert() returns null without stopping the run
 		quit(1)
 		return
 
@@ -126,8 +126,8 @@ func _init() -> void:
 	var kinds := {}
 	var houses := 0
 	var odd := 0  # houses not of their village's main style
-	for gx in range(-5, 5):
-		for gz in range(-5, 5):
+	for gx in range(-7, 7):
+		for gz in range(-7, 7):
 			var g := Vector2i(gx, gz)
 			var v: Dictionary = w.village(g)
 			if not v.is_empty():
@@ -172,6 +172,33 @@ func _init() -> void:
 	assert(villages > 0 and roads > 0 and lamps > villages * 5)
 	assert(kinds.size() == w.HOUSE_KINDS, "every house kind is used")
 	assert(odd < houses * 0.2, "villages should keep mostly one style")
+	# Village density: about 50 villages in the 4 x 4 km round the origin (27 on the old 400 m grid),
+	# centres VILLAGE_SPACING apart, so no two villages' houses ever touch; one close to the spawn.
+	var centres: Array[Vector2] = []
+	var all_houses := []  # [house, village index]
+	var lim := ceili(2000.0 / w.VILLAGE_GRID)
+	for gx in range(-lim - 1, lim + 1):
+		for gz in range(-lim - 1, lim + 1):
+			var v: Dictionary = w.village(Vector2i(gx, gz))
+			if v.is_empty() or absf(v.centre.x) > 2000.0 or absf(v.centre.y) > 2000.0:
+				continue
+			for hs in v.houses:
+				all_houses.append([hs, centres.size()])
+			centres.append(v.centre)
+	var nearest := INF
+	for i in centres.size():
+		nearest = minf(nearest, centres[i].length())
+		for j in i:
+			assert(centres[i].distance_to(centres[j]) >= w.VILLAGE_SPACING, "villages too close")
+	for i in all_houses.size():
+		for j in i:
+			var h1: Array = all_houses[i]
+			var h2: Array = all_houses[j]
+			if h1[1] != h2[1]:
+				assert(Vector2(h1[0][0].x, h1[0][0].z).distance_to(Vector2(h2[0][0].x, h2[0][0].z)) >= w.house_radius[h1[0][2]] + w.house_radius[h2[0][2]], "houses of two villages overlap")
+	print("villages in 4 x 4 km round the origin: %d, nearest to the spawn %.0f m" % [centres.size(), nearest])
+	assert(centres.size() >= 45, "fewer villages than expected")
+	assert(nearest < 150.0, "no village near the spawn")
 	for k in w.HOUSE_KINDS:  # the collision box sits within the house, the lamps' keep-out area covers it
 		var hb := AABB(w.house_centres[k] - w.house_shapes[k].size / 2.0, w.house_shapes[k].size)
 		assert(w.house_low[k].encloses(Rect2(hb.position.x, hb.position.z, hb.size.x, hb.size.z)))
@@ -191,6 +218,37 @@ func _init() -> void:
 		assert(lay.houses.any(func(l): return not l.is_empty()))
 		assert(not lay.lamps.is_empty(), "no street lamp in a village zone")
 		break
+	# Villages are clearings, in every zone they reach and at the highest density: no tree, bush or rock
+	# on the square or its furniture, near a house, lamp or prop, or between the houses (their polygon).
+	w.density = w.DENSITY_MAX
+	var in_village := 0
+	var cleared := 0
+	for gx in range(-5, 5):
+		for gz in range(-5, 5):
+			var v: Dictionary = w.village(Vector2i(gx, gz))
+			if v.is_empty():
+				continue
+			cleared += 1
+			var ring := PackedVector2Array()  # houses by angle round the square
+			for hs in v.houses:
+				ring.append(Vector2(hs[0].x, hs[0].z))
+			var cells := {}
+			for dx in [-1, 0, 1]:
+				for dz in [-1, 0, 1]:
+					cells[w.cell_of(Vector3(v.centre.x + dx * 45.0, 0, v.centre.y + dz * 45.0))] = true
+			for cell in cells:
+				var mask: PackedByteArray = w.layout(cell).mask
+				var o: Vector2 = Vector2(cell) * w.ZONE_SIZE
+				for list in w.tree_transforms(cell, mask) + w.bush_transforms(cell, mask) + w.rock_transforms(cell, mask):
+					for t in list:
+						var p: Vector2 = Vector2(t.origin.x, t.origin.z) + o
+						if p.distance_to(v.centre) < w.BENCH_RADIUS + 4.0 or w.in_house(p, v.houses, 2.0) \
+								or not w._far_from(p, v.lamps + v.props, 2.0) \
+								or (ring.size() >= 3 and Geometry2D.is_point_in_polygon(p, ring)):
+							in_village += 1
+	w.density = 1.0
+	print("trees, bushes and rocks inside %d villages at density %s: %d" % [cleared, w.DENSITY_MAX, in_village])
+	assert(cleared > 5 and in_village == 0, "trees, bushes or rocks inside a village")
 	# Benches, planters and village flowers: deterministic, off the roads, out of the houses, clear of
 	# the lamps and of each other; benches face the square, planters stand against a front wall; a
 	# village zone's layout and full build carry them.
@@ -199,13 +257,13 @@ func _init() -> void:
 	var plants := 0
 	var garden: Array = w.VILLAGE_FLOWERS.map(func(n): return w.flowers.find_custom(func(f): return f.name == n))
 	var spawn_village: Vector2i
-	for gx in range(-5, 5):
-		for gz in range(-5, 5):
+	for gx in range(-7, 7):
+		for gz in range(-7, 7):
 			var g := Vector2i(gx, gz)
 			var v: Dictionary = w.village(g)
 			if v.is_empty():
 				continue
-			if v.centre.distance_to(Vector2(133.7, -143.1)) < 5.0:
+			if v.centre.length() < 150.0:  # the one near the spawn (about (52.6, 82.5))
 				spawn_village = g
 			var again: Dictionary = w._village(g)
 			assert(again.props == v.props and again.flowers == v.flowers)
@@ -258,6 +316,24 @@ func _init() -> void:
 	quit()
 
 
+## Mountains twice as high as the old hills (±20 m, summits ~32 m), while plains (hilliness ≤ 0.2:
+## villages), lakes and shores keep exactly the old heights.
+func _check_mountains(w):
+	var top := -INF
+	for x in range(-2000, 2000, 8):
+		for z in range(-2000, 2000, 8):
+			var h: float = w.height(x, z)
+			var n: float = w.noise.get_noise_2d(x, z)
+			var hill: float = w.hilliness(x, z)
+			var old := lerpf(n * 6.0 + 4.0, n * 35.0 + 5.0, hill)
+			top = maxf(top, h)
+			assert(hill > 0.2 or h == old, "plains changed at %d,%d" % [x, z])
+			assert((h < w.WATER_LEVEL) == (old < w.WATER_LEVEL), "shore moved at %d,%d" % [x, z])
+	print("highest summit within 2 km: %.1f m" % top)
+	assert(top >= 64.0, "mountains dropped back: %.1f m, old hills reached 32.3 m" % top)
+	return true
+
+
 ## Baked shading (world._shading, tools/make_trees.py bake_shade): meadow patches vary, hollows are
 ## darker than crests, the ground under a tree darker than without it, zone seams and detail levels
 ## agree, and models are darker at the foot than at the top.
@@ -281,7 +357,7 @@ func _check_shading(w):
 	var samples := []
 	for z in range(0, n, 2):
 		for x in range(0, n, 2):
-			if w.forest(x - half, z - half) < -0.05:
+			if w.forest(x - half, z - half) < -w.FOREST_FRINGE:
 				var h: float = w.height(x - half, z - half)
 				var r: float = w.HOLLOW_R
 				var around: float = (w.height(x - half + r, z - half) + w.height(x - half - r, z - half) + w.height(x - half, z - half + r) + w.height(x - half, z - half - r)) / 4.0
@@ -292,15 +368,29 @@ func _check_shading(w):
 	var hollow: float = samples.slice(-k).reduce(func(s, e): return s + e[1], 0.0) / k
 	print("ground light: crests %.3f, hollows %.3f, meadow patch %.2f..%.2f" % [crest, hollow, lo, hi])
 	assert(hollow < crest - 0.03, "hollows should be darker than crests")
-	# Contact shade: the ground at a tree's foot is darker than with no objects.
+	# Contact shade: the ground at a tree's foot is darker than with no objects, right up to the zone
+	# edge (the neighbours shade their side too: the seam check above).
 	var shaded := 0
+	var at_edge := 0
 	for list in w.tree_transforms(cell, mask):
 		for t: Transform3D in list:
-			if absf(t.origin.x) < half - 5 and absf(t.origin.z) < half - 5:
-				var i := (roundi(t.origin.z) + half) * n + roundi(t.origin.x) + half
-				assert(uv0[i].y < bare[i].y - 0.1 or uv0[i].y <= w.SHADE_MIN + 0.001, "no shade under a tree")
-				shaded += 1
-	assert(shaded > 5)
+			var i := (roundi(t.origin.z) + half) * n + roundi(t.origin.x) + half
+			assert(uv0[i].y < bare[i].y - 0.1 or uv0[i].y <= w.SHADE_MIN + 0.001, "no shade under a tree at %s" % t.origin)
+			shaded += 1
+			at_edge += int(absf(t.origin.x) > half - 3 or absf(t.origin.z) > half - 3)
+	assert(shaded > 5 and at_edge > 0, "%d trees, %d at the edge" % [shaded, at_edge])
+	# Forest fringe: the grass a few metres outside the forest is already darker than open meadow.
+	var fringe := [0.0, 0]
+	var open := [0.0, 0]
+	for z in range(0, n, 4):
+		for x in range(0, n, 4):
+			var e: float = w.forest(x - half, z - half)
+			var bucket = fringe if e > -0.12 and e < -0.04 else (open if e < -0.35 else null)
+			if bucket != null and w.height(x - half, z - half) > 2.0 and mask[z * n + x] == w.FREE:
+				bucket[0] += bare[z * n + x].y
+				bucket[1] += 1
+	print("ground light: forest fringe %.3f, open meadow %.3f" % [fringe[0] / fringe[1], open[0] / open[1]])
+	assert(fringe[0] / fringe[1] < open[0] / open[1] - 0.025, "no darker fringe outside the forest")
 	# Every detail level agrees at the coarse grid's points (objects aside: bushes only exist in full).
 	var full: PackedVector2Array = w._shading(Vector2i(3, 2), 1, w.layout(Vector2i(3, 2)).mask, [], [])
 	var coarse: PackedVector2Array = w._shading(Vector2i(3, 2), w.COARSE_RES, w.layout(Vector2i(3, 2)).mask, [], [])

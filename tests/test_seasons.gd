@@ -46,7 +46,7 @@ func _check():
 	var s = w.seasons
 	var S = s.Season
 	# Summer palette = the colours world bakes into the terrain (the shader's category keys).
-	assert(s.GROUND[S.SUMMER] == [w._ground_color(0, 1), w._ground_color(5, 0.5), w._ground_color(30, 1), w._ground_color(5, 1), w.road_color])
+	assert(s.GROUND[S.SUMMER] == [w._ground_color(0, 1), w._ground_color(5, 0.5), w._ground_color(w.SNOW_LINE + 1.0, 1), w._ground_color(5, 1), w.road_color])
 	var trees := _trees()
 	var kinds := {}
 	for t in trees:

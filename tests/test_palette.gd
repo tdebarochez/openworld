@@ -65,5 +65,9 @@ func _check():
 	for m: Mesh in w.prop_meshes:
 		for i in m.get_surface_count():
 			assert(_name(m.surface_get_material(i).albedo_color) != "", "prop colour")
+	assert(w.cat_coats.size() == 3 and w.cat_coats.all(func(c): return _name(c) != ""), "cat coats")
+	for m: Mesh in w.cat_meshes:  # surface 0 = coat: the cat shader × the instance's coat
+		for i in range(1, m.get_surface_count()):
+			assert(_name(m.surface_get_material(i).albedo_color) != "", "cat eyes or nose colour")
 	assert(_name(s.base.top) == "sky" and _name(s.base.haze) == "haze" and _name(s.base.sun) == "sun")
 	return true

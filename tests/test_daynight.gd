@@ -104,6 +104,8 @@ func _check():
 	var noon_energy := sun.light_energy
 	var noon_haze: Color = w.seasons.sky.sky_horizon_color
 	assert(sun.global_basis.z.y > 0.7)  # light shines along -Z: downwards
+	d.set_time(18.5)  # the terrain's warm/cool slopes follow the sun
+	assert(w.terrain_mat.get_shader_parameter("sun_dir").is_equal_approx(sun.global_basis.z), "terrain sun_dir stale")
 	d.set_time(0.0)
 	assert(sun.global_basis.z.y > 0.3, "moonlight from above")
 	assert(sun.light_energy < noon_energy * 0.5 and sun.light_energy > 0.0)
@@ -187,7 +189,7 @@ func _check():
 	assert(on[0] / on[1] > 4.0 * off[0] / off[1] and on[0] / on[1] > 0.05)
 	assert(d._stars().get_image().get_data() == img.get_data(), "deterministic")
 	# Village street lamps: on from dusk to dawn (lanterns glow, lights shown), off by day.
-	var lv: Dictionary = w.layout(w.cell_of(Vector3(133.7, 0, -143.1)))  # the village nearest the spawn
+	var lv: Dictionary = w.layout(w.cell_of(Vector3(52.6, 0, 82.5)))  # the village nearest the spawn
 	assert(not lv.lamps.is_empty())
 	w.seasons.set_season(w.seasons.Season.SUMMER)
 	for case in [[0.0, true], [13.0, false], [21.5, true], [6.0, false]]:  # summer: sunset 20:46, sunrise 5:14
