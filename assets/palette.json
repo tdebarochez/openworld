@@ -25,7 +25,8 @@
     "soot": "#4b4346",
     "ash": "#a19b94",
     "ember": "#ff8a3d",
-    "smoke": "#d9d4cc"
+    "smoke": "#d9d4cc",
+    "limestone": "#cdbd9c"
   },
   "cats": ["ginger", "soot", "ash"],
   "laundry": ["snow", "cream", "rose", "sky", "gold", "leaf_light", "terracotta"],

@@ -365,7 +365,9 @@ func meadow(p: Vector2, roads: Array) -> bool:
 			var s: Dictionary = world.village_site(g + Vector2i(dx, dz))
 			if not s.is_empty() and s.centre.distance_to(p) < FLOCK_NEAR:
 				return false
-	return true
+	# Nor on a landmark's cleared ground (a windmill stands 80-130 m from a village, like the flocks).
+	var ls: Dictionary = world.landmark_site(Vector2i((p / world.LANDMARK_GRID).floor()))
+	return ls.is_empty() or Vector2(ls.pos.x, ls.pos.z).distance_to(p) > world.LANDMARK_CLEAR[ls.kind] + 4.0
 
 
 ## Zone `cell`'s share of village life (zone-local transforms, each thing in the zone holding its

@@ -127,7 +127,7 @@ var terrain_mat := ShaderMaterial.new()
 var leaf_mats: Array[StandardMaterial3D] = []  # per tree model then bush model, the tintable leaves material
 var leaf_albedo: Array[Color] = []  # its summer colour
 var snowy_mats: Array[ShaderMaterial] = []  # same indices, winter leaves (used for conifers and holly)
-var roof_mats: Array[Material] = []  # per house kind then cabin kind, the roof (surface 1, tools/make_houses.py, make_cabins.py)
+var roof_mats: Array[Material] = []  # per _roofed() mesh, the roof (surface 1, tools/make_houses.py, make_cabins.py, make_landmarks.py)
 var snowy_roofs: Array[ShaderMaterial] = []  # same snowy shader: white on the slopes, roof colour below
 var env: Environment
 var sky  # world.SkyMaterial: ProceduralSkyMaterial's colour properties, set dynamically
@@ -233,9 +233,9 @@ func set_season(s: Season) -> void:
 	world._update_hud()
 
 
-## Meshes whose surface 1 is a roof that snows: houses, then cabins (not their piers).
+## Meshes whose surface 1 is a roof that snows: houses, then cabins (not their piers), then landmarks.
 func _roofed() -> Array:
-	return world.house_meshes + world.cabin_meshes.slice(0, world.CABIN_KINDS)
+	return world.house_meshes + world.cabin_meshes.slice(0, world.CABIN_KINDS) + world.roofed_landmarks
 
 
 ## Instance colour for a tree's leaves (sRGB, multiplied by its leaves material and baked shading).
