@@ -1,4 +1,4 @@
-"""Synthesize the game's sounds (one music loop per season, footsteps, jump, landing) as mono 16-bit WAVs.
+"""Synthesize the game's sounds (one music loop per season, footsteps, jump, landing, wing flap) as mono 16-bit WAVs.
 
 Run:  python3 tools/make_sounds.py
 Then: godot --headless --path . --import
@@ -300,6 +300,15 @@ def land():
     return thud + crunch
 
 
+def flap():
+    """Hen wing beat: three quick soft feathery swishes (twice-lowpassed noise), fading."""
+    rng = np.random.default_rng(600)
+    t = np.arange(int(0.3 * RATE)) / RATE
+    swish = lowpass(lowpass(rng.normal(0, 1, len(t)), 1600), 1600)
+    beats = sum(a * np.exp(-((t - at) / 0.022) ** 2) for at, a in [(0.035, 1.0), (0.115, 0.7), (0.195, 0.45)])
+    return swish * beats
+
+
 def rumble(rng, t, cutoff, bumps):
     """Thunder roll: twice-lowpassed noise swelling and fading in random bumps (echoes off the clouds and
     hills), the whole thing dying away over a few seconds."""
@@ -370,6 +379,7 @@ def main():
         write(f"step_{i + 1}.wav", footstep(i), 0.8)
     write("jump.wav", jump(), 0.7)
     write("land.wav", land(), 0.8)
+    write("flap.wav", flap(), 0.6)
     write("thunder_near.wav", thunder_near(), 0.9)
     write("thunder_far.wav", thunder_far(), 0.7)
 
