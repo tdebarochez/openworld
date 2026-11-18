@@ -357,7 +357,7 @@ func _check_shading(w):
 	var samples := []
 	for z in range(0, n, 2):
 		for x in range(0, n, 2):
-			if w.forest(x - half, z - half) < -0.05:
+			if w.forest(x - half, z - half) < -w.FOREST_FRINGE:
 				var h: float = w.height(x - half, z - half)
 				var r: float = w.HOLLOW_R
 				var around: float = (w.height(x - half + r, z - half) + w.height(x - half - r, z - half) + w.height(x - half, z - half + r) + w.height(x - half, z - half - r)) / 4.0
@@ -368,15 +368,29 @@ func _check_shading(w):
 	var hollow: float = samples.slice(-k).reduce(func(s, e): return s + e[1], 0.0) / k
 	print("ground light: crests %.3f, hollows %.3f, meadow patch %.2f..%.2f" % [crest, hollow, lo, hi])
 	assert(hollow < crest - 0.03, "hollows should be darker than crests")
-	# Contact shade: the ground at a tree's foot is darker than with no objects.
+	# Contact shade: the ground at a tree's foot is darker than with no objects, right up to the zone
+	# edge (the neighbours shade their side too: the seam check above).
 	var shaded := 0
+	var at_edge := 0
 	for list in w.tree_transforms(cell, mask):
 		for t: Transform3D in list:
-			if absf(t.origin.x) < half - 5 and absf(t.origin.z) < half - 5:
-				var i := (roundi(t.origin.z) + half) * n + roundi(t.origin.x) + half
-				assert(uv0[i].y < bare[i].y - 0.1 or uv0[i].y <= w.SHADE_MIN + 0.001, "no shade under a tree")
-				shaded += 1
-	assert(shaded > 5)
+			var i := (roundi(t.origin.z) + half) * n + roundi(t.origin.x) + half
+			assert(uv0[i].y < bare[i].y - 0.1 or uv0[i].y <= w.SHADE_MIN + 0.001, "no shade under a tree at %s" % t.origin)
+			shaded += 1
+			at_edge += int(absf(t.origin.x) > half - 3 or absf(t.origin.z) > half - 3)
+	assert(shaded > 5 and at_edge > 0, "%d trees, %d at the edge" % [shaded, at_edge])
+	# Forest fringe: the grass a few metres outside the forest is already darker than open meadow.
+	var fringe := [0.0, 0]
+	var open := [0.0, 0]
+	for z in range(0, n, 4):
+		for x in range(0, n, 4):
+			var e: float = w.forest(x - half, z - half)
+			var bucket = fringe if e > -0.12 and e < -0.04 else (open if e < -0.35 else null)
+			if bucket != null and w.height(x - half, z - half) > 2.0 and mask[z * n + x] == w.FREE:
+				bucket[0] += bare[z * n + x].y
+				bucket[1] += 1
+	print("ground light: forest fringe %.3f, open meadow %.3f" % [fringe[0] / fringe[1], open[0] / open[1]])
+	assert(fringe[0] / fringe[1] < open[0] / open[1] - 0.025, "no darker fringe outside the forest")
 	# Every detail level agrees at the coarse grid's points (objects aside: bushes only exist in full).
 	var full: PackedVector2Array = w._shading(Vector2i(3, 2), 1, w.layout(Vector2i(3, 2)).mask, [], [])
 	var coarse: PackedVector2Array = w._shading(Vector2i(3, 2), w.COARSE_RES, w.layout(Vector2i(3, 2)).mask, [], [])

@@ -37,30 +37,68 @@ static func colours(keys: Array) -> Array:
 # Vertex colour = ground category key; UV = world._build_zone's baked shading: x = meadow patch
 # (-1 deep green dip .. 1 light yellow-green patch, on the grass only; ±6 % value elsewhere),
 # y = light multiplier (hollows, crests, forest floor, contact shade under trees, bushes, rocks, houses).
+# Painted relief for eye level, computed here so zones don't cost more to build:
+# - slopes facing the sun (sun_dir, set by daynight.gd) warmer and lighter, slopes away cooler and
+#   darker, strongly amplified so the gentle plains show their swells (and the same in both renderers:
+#   Compatibility's light is mostly ambient);
+# - small world-space grass patches (~16 m and ~5 m) towards the meadow pair: a texture gradient that
+#   makes a flat field read as ground receding. Each scale fades once a pixel covers it (fwidth), so
+#   grazing angles don't shimmer; the baked ~30-120 m patches carry on beyond.
 const TERRAIN_SHADER := """
 shader_type spatial;
 uniform vec3 key[5];  // summer ground colours as stored in the mesh (sRGB)
 uniform vec3 to[5];   // this season's colours (sRGB)
 uniform vec3 meadow[2];  // this season's grass in dips and in light patches (sRGB)
+uniform vec3 sun_dir = vec3(0.4, 0.8, 0.4);  // towards the sun (or moon)
+const float SLOPE_GAIN = 8.0;  // horizontal normal × this = full warm/cool shift (plains slope ≤ ~0.15)
+const vec3 SUNNY = vec3(1.12, 1.06, 0.9);
+const vec3 SHADY = vec3(0.76, 0.84, 1.0);
+const float PATCHES = 0.6;  // how far the small patches go towards the meadow pair
 varying vec3 col;
+varying vec3 lo;  // the meadow pair, lit like col
+varying vec3 hi;
+varying float grass;
+varying vec2 wxz;
+vec3 linear(vec3 c) {  // same conversion as StandardMaterial3D's vertex_color_is_srgb
+	return OUTPUT_IS_SRGB ? c : mix(pow((c + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), c * (1.0 / 12.92), lessThan(c, vec3(0.04045)));
+}
+float hash(vec2 p) {  // integer hash (Dave Hoskins'): 0..1, exact at any world coordinate
+	uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
+	return float((q.x ^ q.y) * 1597334673u) * (1.0 / 4294967295.0);
+}
+float value_noise(vec2 p) {  // -1..1
+	vec2 i = floor(p);
+	vec2 f = p - i;
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y) * 2.0 - 1.0;
+}
+float octave(vec2 p) {  // faded out as one pixel spans a noise cell
+	return value_noise(p) * clamp(1.5 - 1.5 * length(fwidth(p)), 0.0, 1.0);
+}
 void vertex() {
 	int k = 0;
 	for (int i = 1; i < 5; i++) {
 		if (distance(COLOR.rgb, key[i]) < distance(COLOR.rgb, key[k])) k = i;
 	}
 	col = to[k];
+	grass = k == 3 ? 1.0 : 0.0;
 	if (k == 3) {
 		col = mix(col, meadow[UV.x > 0.0 ? 1 : 0], abs(UV.x));
 	} else {
 		col *= 1.0 + 0.06 * UV.x;
 	}
-	col *= UV.y;
-	if (!OUTPUT_IS_SRGB) {  // same conversion as StandardMaterial3D's vertex_color_is_srgb
-		col = mix(pow((col + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), col * (1.0 / 12.92), lessThan(col, vec3(0.04045)));
-	}
+	vec2 s = sun_dir.xz;
+	float facing = clamp(dot(NORMAL.xz, s) * inversesqrt(dot(s, s) + 1e-4) * SLOPE_GAIN, -1.0, 1.0);
+	vec3 tint = UV.y * mix(vec3(1.0), facing > 0.0 ? SUNNY : SHADY, abs(facing));
+	col = linear(col * tint);
+	lo = linear(meadow[0] * tint);
+	hi = linear(meadow[1] * tint);
+	wxz = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz;
 }
 void fragment() {
-	ALBEDO = col;
+	float n = 0.55 * octave(wxz * (1.0 / 10.0)) + 0.45 * octave(wxz * (1.0 / 3.0) + 37.0);
+	n = smoothstep(-0.45, 0.45, n) * 2.0 - 1.0;  // soft-edged dabs rather than a mushy gradient
+	ALBEDO = mix(col, n > 0.0 ? hi : lo, abs(n) * PATCHES * grass) * (1.0 + 0.05 * n * grass);
 }
 """
 # Winter conifers (and roofs): needles darkened by the instance colour and baked shading, white on

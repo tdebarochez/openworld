@@ -46,6 +46,7 @@ const HOLLOW_R := 8  # m: ground lower than the ring this far round is a hollow 
 const HOLLOW_DARK := 0.22  # light lost 1.5 m or more below that ring
 const CREST_LIGHT := 0.06  # light gained 1.5 m or more above it
 const FOREST_DARK := 0.15  # light lost on the forest floor
+const FOREST_FRINGE := 0.3  # forest() band (~12 m) outside the edge where the grass already deepens
 const CONTACT := 0.3  # light lost at the foot of a tree, bush, rock or house wall
 const HOUSE_SHADE := 3.0  # m the shade reaches out from a house
 const SHADE_MIN := 0.62  # darkest the ground gets, however many shades overlap
@@ -323,8 +324,9 @@ func _normal(x: float, z: float) -> Vector3:
 
 
 ## Tree placements in zone-local coords (origin on the ground), deterministic per seed + cell.
-## Returns one Array[Transform3D] per TreeKind.
-func tree_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
+## Returns one Array[Transform3D] per TreeKind. `only`: keep just the trees in this world x/z rect
+## (cheap: the others are dropped before any noise is sampled).
+func tree_transforms(cell: Vector2i, mask := PackedByteArray(), only := Rect2()) -> Array:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(Vector3i(noise.seed, cell.x, cell.y))
 	var half := ZONE_SIZE / 2.0
@@ -339,6 +341,8 @@ func tree_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 		var rot := rng.randf() * TAU
 		var wx := cell.x * ZONE_SIZE + lx
 		var wz := cell.y * ZONE_SIZE + lz
+		if only.has_area() and not only.has_point(Vector2(wx, wz)):
+			continue
 		var h := height(wx, wz)
 		if h < WATER_LEVEL + 2.0 or h > TREE_LINE or _normal(wx, wz).y < 0.85 or _blocked(mask, lx, lz):
 			continue
@@ -1139,7 +1143,9 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 	var trees := tree_transforms(cell, mask)
 	var rocks := rock_transforms(cell, mask) if full else []
 	var bushes := bush_transforms(cell, mask) if full else []
-	var uvs := _shading(cell, res, mask, [[trees, 2.8], [bushes, 1.4], [rocks, 1.3]], lay.near_houses)
+	# Tree shade across zone edges (~1 ms): not worth it on the coarse 4 m grid, a kilometre away.
+	var tree_shade := [trees, 2.8] if detail == Detail.COARSE else [trees + [_edge_trees(cell, mask)], 2.8, true]
+	var uvs := _shading(cell, res, mask, [tree_shade, [bushes, 1.4], [rocks, 1.3]], lay.near_houses)
 
 	var idx := PackedInt32Array()
 	for z in cells:
@@ -1444,6 +1450,26 @@ func _ground_color(h: float, up: float) -> Color:
 	return ground[3]  # grass
 
 
+## The 8 neighbouring zones' trees whose contact shade reaches into `cell` (zone-local coords), so
+## a tree's shade carries on across the edge. Their own layout masks aren't built (too slow): the
+## zone's mask at the nearest edge point stands in for them.
+## ponytail: may differ where a road or village clearing crosses the edge right there (a stray or
+## missing half shade); build the neighbours' masks if that ever shows.
+func _edge_trees(cell: Vector2i, mask: PackedByteArray) -> Array[Transform3D]:
+	var r := 2.8 * 1.4  # largest tree shade (_build_zone's radius × the largest tree scale)
+	var origin := Vector2(cell) * ZONE_SIZE
+	var only := Rect2(origin - Vector2.ONE * (ZONE_SIZE / 2.0 + r), Vector2.ONE * (ZONE_SIZE + 2.0 * r))
+	var out: Array[Transform3D] = []
+	for d in [Vector2i(-1, -1), Vector2i(0, -1), Vector2i(1, -1), Vector2i(-1, 0), Vector2i(1, 0), Vector2i(-1, 1), Vector2i(0, 1), Vector2i(1, 1)]:
+		var shift := Vector3(d.x, 0, d.y) * ZONE_SIZE
+		for list in tree_transforms(cell + d, PackedByteArray(), only):
+			for t: Transform3D in list:
+				var l := t.translated(shift)
+				if not _blocked(mask, l.origin.x, l.origin.z):
+					out.append(l)
+	return out
+
+
 ## Baked terrain shading per vertex (`res` m grid), read by seasons.TERRAIN_SHADER as UV:
 ## x = meadow patch (-1 deep green dip .. 1 light yellow-green patch), y = light multiplier: hollows
 ## and slope feet darker, crests lighter, forest floor darker, and a soft contact shade round each of
@@ -1473,28 +1499,29 @@ func _shading(cell: Vector2i, res: int, mask: PackedByteArray, objects: Array, h
 				around += lh[i + d] + lh[i + d * g] + lh[i + d * (g + 1)] + lh[i + d * (g - 1)]
 			var hollow := around / 8.0 - lh[i]  # > 0 in a hollow or at the foot of a slope, < 0 on a crest
 			var l := 1.0 - HOLLOW_DARK * smoothstep(0.0, 1.5, hollow) + CREST_LIGHT * smoothstep(0.0, 1.5, -hollow)
-			var f := 0.0  # forest floor: where trees grow (tree_transforms' tests, bar the slope)
+			var f := 0.0  # forest floor: where trees grow (tree_transforms' tests, bar the slope), and its fringe
 			if lh[i] > WATER_LEVEL + 2.0 and lh[i] < TREE_LINE and mask[z * SHADE_STEP * (ZONE_SIZE + 1) + x * SHADE_STEP] == FREE:
-				f = smoothstep(0.0, 0.3, forest(wx, wz))
+				f = smoothstep(-FOREST_FRINGE, 0.3, forest(wx, wz))
 			light.append(l * (1.0 - FOREST_DARK * f))
 			# Meadow patches ~120 m wide, broken up by smaller ones (~30 m); deep green under the trees.
 			var p := noise.get_noise_2d(wx * 2.0 + 9000.0, wz * 2.0) * 1.6 + noise.get_noise_2d(wx * 8.0 - 3000.0, wz * 8.0) * 1.0
-			patch.append(lerpf(clampf(p, -1.0, 1.0), -1.0, 0.7 * f))
+			patch.append(lerpf(clampf(p, -1.0, 1.0), -1.0, 0.85 * f))
 	var n := ZONE_SIZE / res + 1
 	var contact := PackedFloat32Array()
 	contact.resize(n * n)
 	contact.fill(1.0)
-	for group in objects:
+	for group in objects:  # [lists, radius, true when the neighbours' objects near the edge are included]
+		var across: bool = group.size() > 2 and group[2]
 		for list in group[0]:
 			for t: Transform3D in list:
 				var r: float = group[1] * t.basis.x.length()
-				# ponytail: no shade for objects whose shade would cross the zone edge (the neighbour can't
-				# know them, half a blob would show); compute neighbours' placements if the gaps show.
-				if absf(t.origin.x) > half - r or absf(t.origin.z) > half - r:
+				# Bushes and rocks only exist in FULL zones: no shade crossing the edge (half a blob would
+				# show against a LIGHT neighbour). Trees exist at every level: see _edge_trees.
+				if not across and (absf(t.origin.x) > half - r or absf(t.origin.z) > half - r):
 					continue
 				var c := Vector2(t.origin.x, t.origin.z)
-				for z in range(ceili((c.y - r + half) / res), floori((c.y + r + half) / res) + 1):
-					for x in range(ceili((c.x - r + half) / res), floori((c.x + r + half) / res) + 1):
+				for z in range(maxi(ceili((c.y - r + half) / res), 0), mini(floori((c.y + r + half) / res), n - 1) + 1):
+					for x in range(maxi(ceili((c.x - r + half) / res), 0), mini(floori((c.x + r + half) / res), n - 1) + 1):
 						var d2 := Vector2(x * res - half, z * res - half).distance_squared_to(c) / (r * r)
 						if d2 < 1.0:
 							contact[z * n + x] *= 1.0 - CONTACT * (1.0 - d2) * (1.0 - d2)
