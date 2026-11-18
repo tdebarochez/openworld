@@ -202,18 +202,19 @@ func _physics_process(delta: float) -> void:
 	_animate()
 
 
-## The hen's animation from what the body is doing.
+## The hen's animation from move_state (it has no fall or swim clip: a fast fall spreads the wings,
+## a slow one — the top of a jump — keeps the current clip; swimming idles).
 func _animate() -> void:
 	var h := Vector2(velocity.x, velocity.z).length()
-	if global_position.y < world.WATER_LEVEL or is_on_floor() and h < 0.5:  # swimming or standing
-		avatar.play(&"idle")
-	elif is_on_floor():
-		if h < SPEED * (1.0 + SPRINT_MULT) / 2.0:
+	match move_state:
+		&"walk":
 			avatar.play(&"walk", h / SPEED)
-		else:
+		&"run":
 			avatar.play(&"run", h / (SPEED * SPRINT_MULT))
-	elif velocity.y > 0.5:
-		avatar.play(&"flap")
-	elif velocity.y < -2.0:
-		avatar.play(&"glide")
-	# else around the top of a jump, or off a small step: keep the current one
+		&"fall":
+			if velocity.y < -2.0:
+				avatar.play(&"glide")
+		&"swim":
+			avatar.play(&"idle")
+		_:  # idle, flap, glide
+			avatar.play(move_state)
