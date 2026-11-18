@@ -33,7 +33,7 @@ var view := View.FIRST
 var arm := SpringArm3D.new()  # third person: pitch pivot at the head, camera at its end
 var tp_cam := Camera3D.new()
 var iso_cam := Camera3D.new()
-var avatar := MeshInstance3D.new()  # hidden in first person
+var avatar: Node3D = preload("res://assets/hen/hen.glb").instantiate()  # hen.gd; hidden in first person
 var ear := AudioListener3D.new()  # birds are heard from the player, not from a camera behind or far above
 var fp_shadows := 0.0
 ## For the avatar's animations: idle, walk, run, flap, glide, fall or swim; set every physics frame.
@@ -68,15 +68,7 @@ func _ready() -> void:
 	iso_cam.top_level = true  # doesn't turn with the player
 	iso_cam.rotation = Vector3(ISO_PITCH, ISO_YAW, 0)
 	add_child(iso_cam)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = world.seasons.colour("terracotta")
-	avatar.mesh = CapsuleMesh.new()  # same size as the collision capsule
-	avatar.material_override = mat
-	var nose := MeshInstance3D.new()  # shows which way the player faces
-	nose.mesh = BoxMesh.new()
-	nose.mesh.size = Vector3(0.3, 0.2, 0.4)
-	nose.position = Vector3(0, 0.55, -0.5)
-	avatar.add_child(nose)
+	avatar.position.y = -1.0  # feet at the bottom of the collision capsule
 	avatar.visible = false
 	add_child(avatar)
 	ear.position.y = 0.7
@@ -207,3 +199,21 @@ func _physics_process(delta: float) -> void:
 		move_state = &"run" if ground_speed > SPEED * 1.5 else &"walk"
 	if iso:
 		_follow()
+	_animate()
+
+
+## The hen's animation from what the body is doing.
+func _animate() -> void:
+	var h := Vector2(velocity.x, velocity.z).length()
+	if global_position.y < world.WATER_LEVEL or is_on_floor() and h < 0.5:  # swimming or standing
+		avatar.play(&"idle")
+	elif is_on_floor():
+		if h < SPEED * (1.0 + SPRINT_MULT) / 2.0:
+			avatar.play(&"walk", h / SPEED)
+		else:
+			avatar.play(&"run", h / (SPEED * SPRINT_MULT))
+	elif velocity.y > 0.5:
+		avatar.play(&"flap")
+	elif velocity.y < -2.0:
+		avatar.play(&"glide")
+	# else around the top of a jump, or off a small step: keep the current one
