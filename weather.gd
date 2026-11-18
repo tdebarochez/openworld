@@ -25,6 +25,7 @@ const STORM_FAR := 30000.0  # m: a cumulonimbus grows and comes closer as its am
 const STORM_BASE := 6000.0  # m, radius of its dark base: rain and close lightning under it
 const LIGHTNING_MIN := 0.3  # cumulonimbus amount (tower built) from which it strikes
 const SOUND := 343.0  # m/s
+const DAMP_HOURS := 8
 # Scenarios: weights by season (summer, autumn, winter, spring), then keys {genus: amount}.
 const SCENARIOS := [
 	[[4, 2, 1, 3], [{G.CU: 0.45, G.CI: 0.3}, {G.CU: 0.6, G.CI: 0.15}, {G.CU: 0.5, G.CI: 0.35}]],  # fair
@@ -53,6 +54,7 @@ var storm := Vector2.ZERO  # world xz of the cumulonimbus
 var storm_dist := STORM_FAR
 var overcast := 0.0  # 0 clear .. 1 dark overcast overhead
 var rain := 0.0  # precipitation at the player, 0..1 (≥ 0.5 = heavy)
+var damp := 0.0  # 0..1, steady rain in the last DAMP_HOURS game hours: daynight.gd thickens the morning mist
 var strobe := 0.0  # lightning flicker, 0..1 (the bolt)
 var flash := 0.0  # its light on the scene: dimmer far away
 var bolt := Vector3(0, 0, 99)  # last strike: world x, z and age (s)
@@ -140,6 +142,9 @@ func _process(delta: float) -> void:
 		clear *= 1.0 - DIM[g] * amt[g]
 	overcast = 1.0 - clear
 	rain = maxf(smoothstep(0.4, 0.7, amt[G.NS]) * 0.45, under)
+	damp = 0.0
+	for i in range(1, DAMP_HOURS + 1):  # the schedule is a pure function of the hour: scrubbing included
+		damp = maxf(damp, smoothstep(0.4, 0.7, target(hours - i)[G.NS]))
 	_precipitate()
 	_lightning(delta, cam)
 	var names := []
