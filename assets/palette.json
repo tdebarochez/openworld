@@ -23,7 +23,8 @@
     "lamp": "#ffcf8f",
     "ginger": "#d4935c",
     "soot": "#4b4346",
-    "ash": "#a19b94"
+    "ash": "#a19b94",
+    "limestone": "#cdbd9c"
   },
   "cats": ["ginger", "soot", "ash"],
   "ground": {
