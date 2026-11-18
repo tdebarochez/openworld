@@ -33,6 +33,13 @@ func _moved_along(want: Vector3) -> bool:
 	return Vector2(moved.x, moved.z).normalized().dot(Vector2(want.x, want.z).normalized()) > 0.95
 
 
+## Direction a ground-plane world vector `d` takes on the screen when the map (M) is drawn.
+func _map_dir(d: Vector3) -> Vector2:
+	var map: TextureRect = w.find_children("*", "TextureRect", true, false)[0]
+	map.refresh()
+	return map.get_global_transform().basis_xform(Vector2(d.x, d.z)).normalized()
+
+
 func _physics_process(_delta: float) -> bool:
 	frames += 1
 	var p = w.player
@@ -49,6 +56,7 @@ func _physics_process(_delta: float) -> bool:
 			# The camera sits behind (along +Z of the player) and above the head.
 			var back: Vector3 = p.tp_cam.global_position - p.global_position
 			assert(back.dot(p.global_basis.z) > 1.0 and back.y > 1.0, "camera at %s" % back)
+			assert(_map_dir(Vector3.FORWARD).is_equal_approx(Vector2.UP), "map: north up outside iso")
 			var shadows: float = w.seasons.sun.directional_shadow_max_distance
 			_press_c()
 			assert(p.view == V.ISO and p.iso_cam.current and p.avatar.visible)
@@ -64,6 +72,12 @@ func _physics_process(_delta: float) -> bool:
 			var away: Vector3 = -p.iso_cam.global_basis.z
 			assert(_moved_along(away), "iso: W should go up the screen")
 			assert((p.global_position - p.iso_cam.global_position).normalized().is_equal_approx(-p.iso_cam.global_basis.z))
+			# The map turns with the iso camera: screen up/right are map up/right, and north (up-right on
+			# screen, foreshortened by the camera pitch to ~30°) is up-right on the map too.
+			var ahead: Vector3 = Vector3(away.x, 0, away.z)
+			for d in [[ahead, 0.999], [p.iso_cam.global_basis.x, 0.999], [Vector3.FORWARD, 0.95]]:
+				var on_screen: Vector2 = p.iso_cam.unproject_position(p.global_position + d[0]) - p.iso_cam.unproject_position(p.global_position)
+				assert(_map_dir(d[0]).dot(on_screen.normalized()) > d[1], "iso map: %s goes %s on screen but %s on the map" % [d[0], on_screen, _map_dir(d[0])])
 			_press_c()
 			assert(p.view == V.FIRST and p.camera.current and not p.avatar.visible and w.seasons.env.fog_enabled)
 			assert(w.seasons.sun.directional_shadow_max_distance < p.ISO_SHADOWS)

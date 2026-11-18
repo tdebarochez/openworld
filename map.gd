@@ -69,3 +69,7 @@ func refresh() -> void:
 			img.set_pixelv(q, Color(0.85, 0.1, 0.1))
 	img.fill_rect(Rect2i(Vector2i(at) - Vector2i(2, 2), Vector2i(5, 5)), Color(0.85, 0.1, 0.1))
 	texture = ImageTexture.create_from_image(img)
+	# North up, except in iso view: turned like the iso camera so the map's up is the screen's up.
+	var pl = world.player
+	pivot_offset = self.size / 2.0
+	rotation = pl.ISO_YAW if pl.view == pl.View.ISO else 0.0
