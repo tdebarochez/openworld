@@ -21,9 +21,12 @@ const ISO_SHADOWS := 220.0  # sun shadow range from the camera in iso view (defa
 const FLAP := 4.5  # m/s up per wing beat (not added: mashing can't stack): +1 m at a jump's apex (v²/2g)
 const MAX_FLAPS := 3  # per airtime, refilled on the ground and in water: a flutter onto a roof, not flight
 const FLAP_ANIM := 0.4  # s of &"flap" after a jump or a wing beat
-const GLIDE_FALL := -2.0  # m/s sink while gliding: 4 m forward per metre down at walking speed
-const GLIDE_BRAKE := 25.0  # m/s² easing a faster fall back to GLIDE_FALL (net 15 against gravity: -6 → -2 in 0.27 s)
-const GLIDE_STEER := 6.0  # m/s² horizontal: a glide keeps its momentum and turns gently
+const GLIDE_FALL := -1.2  # m/s sink while gliding: ~12 m forward per metre down at GLIDE_SPEED
+const GLIDE_BRAKE := 25.0  # m/s² easing a faster fall back to GLIDE_FALL (net 15 against gravity: -6 → -1.2 in 0.32 s)
+const GLIDE_SPEED := 14.0  # m/s a glide speeds up to (faster if sprinting), keys or not
+const GLIDE_STEER := 10.0  # m/s² horizontal: a glide keeps its momentum and turns gently
+const AIR_STEER := 30.0  # m/s² of key control in the air: snappy, but momentum (a glide's) isn't lost
+const AIR_DRAG := 1.5  # m/s² slowing the air momentum with no key held: a released glide carries on
 const AIR_GRACE := 0.15  # s off the floor before move_state says fall/glide (slopes and bumps don't flicker)
 
 var world: Node3D  # world.gd — used to keep the player inside existing zones
@@ -168,9 +171,15 @@ func _physics_process(delta: float) -> void:
 	var dir := ((Basis(Vector3.UP, ISO_YAW) if iso else basis) * Vector3(input.x, 0, input.y)).normalized()
 	if iso and dir:
 		rotation.y = atan2(-dir.x, -dir.z)
-	if gliding:  # momentum carries on, drifting the way the hen faces (or the keys steer) at walking speed
-		var want := (dir if dir else -global_basis.z) * speed
-		var h := Vector2(velocity.x, velocity.z).move_toward(Vector2(want.x, want.z), GLIDE_STEER * delta)
+	var h := Vector2(velocity.x, velocity.z)
+	if gliding:  # momentum carries on, speeding up the way the hen faces (or the keys steer)
+		var want := (dir if dir else -global_basis.z) * maxf(speed, GLIDE_SPEED)
+		h = h.move_toward(Vector2(want.x, want.z), GLIDE_STEER * delta)
+		velocity.x = h.x
+		velocity.z = h.y
+	elif not swimming and not is_on_floor():  # air: keys steer, but a glide's speed isn't dropped on release
+		var want := Vector2(dir.x, dir.z) * maxf(speed, h.length()) if dir else h.move_toward(Vector2.ZERO, AIR_DRAG * delta)
+		h = h.move_toward(want, AIR_STEER * delta)
 		velocity.x = h.x
 		velocity.z = h.y
 	else:
@@ -202,8 +211,8 @@ func _physics_process(delta: float) -> void:
 	_animate()
 
 
-## The hen's animation from move_state (it has no fall or swim clip: a fast fall spreads the wings,
-## a slow one — the top of a jump — keeps the current clip; swimming idles).
+## The hen's animation from move_state (it has no fall clip: a fast fall spreads the wings, a slow
+## one — the top of a jump — keeps the current clip).
 func _animate() -> void:
 	var h := Vector2(velocity.x, velocity.z).length()
 	match move_state:
@@ -214,7 +223,5 @@ func _animate() -> void:
 		&"fall":
 			if velocity.y < -2.0:
 				avatar.play(&"glide")
-		&"swim":
-			avatar.play(&"idle")
-		_:  # idle, flap, glide
+		_:  # idle, flap, glide, swim
 			avatar.play(move_state)

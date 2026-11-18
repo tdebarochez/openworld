@@ -1,7 +1,7 @@
 extends Node3D
 ## The player's hen: root script of assets/hen/hen.glb (set in its .import; the model comes from
-## tools/make_hen.py). Animations idle, walk (made for 8 m/s), run (20 m/s), flap (take-off) and glide,
-## all looping.
+## tools/make_hen.py). Animations idle, walk (made for 8 m/s), run (20 m/s), flap (take-off), glide
+## and swim (floating, paddling), all looping.
 
 const BLEND := 0.15  # s of cross-fade between two animations
 

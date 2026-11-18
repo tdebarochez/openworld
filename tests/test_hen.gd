@@ -28,10 +28,10 @@ func _check():
 	var p = w.player
 	var hen: Node3D = p.avatar
 	var ap: AnimationPlayer = hen.anim
-	for n in ["idle", "walk", "run", "flap", "glide"]:
+	for n in ["idle", "walk", "run", "flap", "glide", "swim"]:
 		assert(ap.has_animation(n), "no %s animation" % n)
 		assert(ap.get_animation(n).loop_mode == Animation.LOOP_LINEAR, "%s doesn't loop" % n)
-	assert(ap.get_animation_list().size() == 5)
+	assert(ap.get_animation_list().size() == 6)
 
 	# Shape, in the player's frame (rest pose): feet on the capsule bottom, height, beak in front.
 	var mi: MeshInstance3D = hen.find_children("", "MeshInstance3D")[0]
@@ -76,7 +76,7 @@ func _check():
 	# _animate() from move_state (player.gd sets it each physics frame; set here by hand) and the velocity.
 	assert(p.is_on_floor())
 	for c in [[Vector3.ZERO, &"idle", "idle"], [Vector3(p.SPEED, 0, 0), &"walk", "walk"],
-			[Vector3(0, 0, p.SPEED * p.SPRINT_MULT), &"run", "run"], [Vector3.ZERO, &"swim", "idle"]]:
+			[Vector3(0, 0, p.SPEED * p.SPRINT_MULT), &"run", "run"], [Vector3.ZERO, &"swim", "swim"]]:
 		p.velocity = c[0]
 		p.move_state = c[1]
 		p._animate()

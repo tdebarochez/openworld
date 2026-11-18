@@ -113,7 +113,7 @@ func _run() -> void:
 	var floor := StaticBody3D.new()  # flat, nothing in the way, far above any hill
 	var box := CollisionShape3D.new()
 	box.shape = BoxShape3D.new()
-	box.shape.size = Vector3(80, 1, 80)
+	box.shape.size = Vector3(400, 1, 400)  # a glide after three flaps goes ~100 m
 	floor.add_child(box)
 	floor.position = Vector3(0, 200, 0)
 	root.add_child(floor)
@@ -169,6 +169,22 @@ func _run() -> void:
 	assert(glide[1] > plain[1] * 1.2, "glide not further")
 	assert(high[1] > glide[1] * 1.5)
 	assert(drift[1] > 2.0)
+
+	# Letting go of a glide in mid-air (no keys) keeps its speed: no dead stop.
+	p.global_position = spot + Vector3(0, 30, 0)
+	p.velocity = Vector3.ZERO
+	_mouse(true)
+	await _frames(90)
+	var gliding_speed := Vector2(p.velocity.x, p.velocity.z).length()
+	_mouse(false)
+	await _frames(10)
+	var after := Vector2(p.velocity.x, p.velocity.z).length()
+	print("glide speed %.1f m/s, 10 frames after letting go %.1f m/s" % [gliding_speed, after])
+	assert(gliding_speed > p.SPEED and after > gliding_speed * 0.9, "momentum lost on release")
+	for i in 600:
+		if p.is_on_floor():
+			break
+		await physics_frame
 
 	# The click that takes the mouse back after Escape doesn't glide.
 	_key(KEY_ESCAPE, true)

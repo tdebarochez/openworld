@@ -16,6 +16,7 @@ Animations, keyed on every frame at 60 fps, all looping (the "-loop" suffix tell
   run    matched to 20 m/s (Shift): body leaning forward, wings half out, feet planted for 30 %
   flap   two strong wing beats in 0.5 s, body tilted up, legs dangling: the take-off
   glide  2 s, wings spread and still but for a little feather wobble, legs tucked
+  swim   1.2 s, body raised to float in the water, gentle bob and sway, legs paddling in turn
 Legs on the ground are posed by a two-bone IK in the side plane, so the feet stay put while the body moves.
 Everything is computed (no random), so re-running gives the same file.
 """
@@ -348,7 +349,27 @@ def glide(p):
     return pose, t
 
 
-ANIMS = [("idle", 150, idle), ("walk", 9, walk), ("run", 8, run), ("flap", 30, flap), ("glide", 120, glide)]
+def swim(p):
+    """Floating like a duck: player.gd keeps the body centre FLOAT_DEPTH under the surface, i.e. the water
+    at z ≈ 1.3 here, so the body rides 0.32 m up to sit in it to mid-height; legs paddle underneath."""
+    pose = {}
+    w = 2 * math.pi * p
+    r, t = body(pose, pitch=5 * D + 1.5 * D * math.sin(2 * w), roll=3 * D * math.sin(w),
+                z=0.32 + 0.015 * math.sin(2 * w))
+    pose["neck"] = rx(-4 * D + 3 * D * math.sin(2 * w + 1))
+    pose["head"] = rx(4 * D - 3 * D * math.sin(2 * w + 1)) @ rz(12 * D * math.sin(w * 0.5 + 0.3))
+    pose["tail"] = rx(-15 * D) @ rz(8 * D * math.sin(w + 0.5))
+    for s, n in SIDES:
+        k = w + (0.0 if s > 0 else math.pi)  # alternate strokes
+        pose[f"wing_{n}"] = ry(-s * 6 * D) @ fold(s)
+        pose[f"thigh_{n}"] = r.inverted() @ rx(-25 * D + 30 * D * math.sin(k))
+        pose[f"shin_{n}"] = rx(-35 * D + 25 * D * math.cos(k))
+        pose[f"foot_{n}"] = rx(-10 * D - 35 * D * math.cos(k))  # paddle open on the back stroke
+    return pose, t
+
+
+ANIMS = [("idle", 150, idle), ("walk", 9, walk), ("run", 8, run), ("flap", 30, flap), ("glide", 120, glide),
+         ("swim", 72, swim)]
 
 
 # --- Rig, keys, export --------------------------------------------------------------------------
