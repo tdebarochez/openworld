@@ -99,4 +99,4 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 os.makedirs(OUT, exist_ok=True)
 for k, (kind, (fn, wood, leaves, variants)) in enumerate(KINDS.items()):
     for i, params in enumerate(variants):
-        build(f"{kind}_{i}", fn, params, 100 + 10 * k + i, wood, leaves, OUT)
+        build(f"{kind}_{i}", fn, params, 100 + 10 * k + i, wood, leaves, OUT, reach=0.8)

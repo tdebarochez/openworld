@@ -29,6 +29,13 @@
     "winter": ["#e3e6ea", "stone", "snow", "snow", "#d2cbc0"],
     "spring": ["sand", "stone", "snow", "#98c160", "ochre"]
   },
+  "meadow": {
+    "_order": "the grass in dips and under trees, in light patches: the terrain shader mixes them into that season's grass",
+    "summer": ["leaf", "leaf_light"],
+    "autumn": ["#a2985a", "#cfb768"],
+    "winter": ["#e1e5ec", "snow"],
+    "spring": ["#7db35a", "#b4d06e"]
+  },
   "autumn_leaves": ["gold", "#dd8a3c", "terracotta", "bark", "#d6a64c"],
   "dry_leaves": "bark",
   "fresh_leaves": "leaf_light",

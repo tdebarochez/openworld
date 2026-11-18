@@ -13,6 +13,7 @@ static var palette: Dictionary = JSON.parse_string(FileAccess.get_file_as_string
 # Ground colours (sRGB) per season: sand, rock, peak, grass, road. Summer = world._ground_color and
 # world.road_color, which the terrain shader uses as keys to recognise each category in the mesh.
 var GROUND := SEASON_KEYS.map(func(s): return colours(palette.ground[s]))
+var MEADOW := SEASON_KEYS.map(func(s): return colours(palette.meadow[s]))  # grass in dips, in light patches
 var AUTUMN_LEAVES := colours(palette.autumn_leaves)
 var DRY_LEAVES := colour(palette.dry_leaves)  # the odd oak keeps its dead leaves in winter
 var FRESH_LEAVES := colour(palette.fresh_leaves)
@@ -33,10 +34,14 @@ static func colour(key: String) -> Color:
 static func colours(keys: Array) -> Array:
 	return keys.map(colour)
 
+# Vertex colour = ground category key; UV = world._build_zone's baked shading: x = meadow patch
+# (-1 deep green dip .. 1 light yellow-green patch, on the grass only; ±6 % value elsewhere),
+# y = light multiplier (hollows, crests, forest floor, contact shade under trees, bushes, rocks, houses).
 const TERRAIN_SHADER := """
 shader_type spatial;
 uniform vec3 key[5];  // summer ground colours as stored in the mesh (sRGB)
 uniform vec3 to[5];   // this season's colours (sRGB)
+uniform vec3 meadow[2];  // this season's grass in dips and in light patches (sRGB)
 varying vec3 col;
 void vertex() {
 	int k = 0;
@@ -44,6 +49,12 @@ void vertex() {
 		if (distance(COLOR.rgb, key[i]) < distance(COLOR.rgb, key[k])) k = i;
 	}
 	col = to[k];
+	if (k == 3) {
+		col = mix(col, meadow[UV.x > 0.0 ? 1 : 0], abs(UV.x));
+	} else {
+		col *= 1.0 + 0.06 * UV.x;
+	}
+	col *= UV.y;
 	if (!OUTPUT_IS_SRGB) {  // same conversion as StandardMaterial3D's vertex_color_is_srgb
 		col = mix(pow((col + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), col * (1.0 / 12.92), lessThan(col, vec3(0.04045)));
 	}
@@ -52,7 +63,8 @@ void fragment() {
 	ALBEDO = col;
 }
 """
-# Winter conifers: needles darkened by the instance colour, white on upward-facing faces.
+# Winter conifers (and roofs): needles darkened by the instance colour and baked shading, white on
+# upward-facing faces.
 const SNOWY_LEAVES_SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
@@ -61,6 +73,9 @@ uniform vec3 snow : source_color;
 varying float up;
 void vertex() {
 	up = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz).y;
+	if (!OUTPUT_IS_SRGB) {  // baked shading × instance colour, sRGB like StandardMaterial3D's
+		COLOR.rgb = mix(pow((COLOR.rgb + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), COLOR.rgb * (1.0 / 12.92), lessThan(COLOR.rgb, vec3(0.04045)));
+	}
 }
 void fragment() {
 	ALBEDO = mix(leaf * COLOR.rgb, snow, smoothstep(0.3, 0.7, up));
@@ -86,8 +101,6 @@ var light := {}  # this season's noon light (keys of base); daynight.gd applies 
 var snow: CPUParticles3D  # made in setup(), carried by the player; weather.gd turns it on
 var leaves: CPUParticles3D  # autumn: dead leaves drifting down
 var petals: CPUParticles3D  # spring: blossom petals floating
-# The Compatibility renderer (web) shades in sRGB, so instance colours must not be linearised there.
-var srgb_out := RenderingServer.get_current_rendering_method() == "gl_compatibility"
 
 
 func _init() -> void:
@@ -181,7 +194,8 @@ func set_season(s: Season) -> void:
 	world._update_hud()
 
 
-## Instance colour for a tree's leaves (multiplied by its leaves material). Deterministic from position.
+## Instance colour for a tree's leaves (sRGB, multiplied by its leaves material and baked shading).
+## Deterministic from position.
 func leaf_color(kind: int, p: Vector3) -> Color:
 	var tint: Color = world.leaf_tint(p)
 	if season == Season.SUMMER:
@@ -199,8 +213,6 @@ func leaf_color(kind: int, p: Vector3) -> Color:
 			c = DRY_LEAVES
 		Season.SPRING:
 			c = BLOSSOM[pick % 2] if pick % 4 == 0 else FRESH_LEAVES
-	if not srgb_out:
-		c = c.srgb_to_linear()
 	return Color(c.r * tint.g, c.g * tint.g, c.b * tint.g)  # tint.g = per-tree brightness
 
 
@@ -240,10 +252,11 @@ func is_blooming(kind: int) -> bool:
 
 
 func _set_ground() -> void:
-	var to := PackedVector3Array()
-	for c: Color in GROUND[season]:
-		to.append(Vector3(c.r, c.g, c.b))
-	terrain_mat.set_shader_parameter("to", to)
+	for p in [["to", GROUND], ["meadow", MEADOW]]:
+		var v := PackedVector3Array()
+		for c: Color in p[1][season]:
+			v.append(Vector3(c.r, c.g, c.b))
+		terrain_mat.set_shader_parameter(p[0], v)
 
 
 ## Snowfall around the player (CPU particles: the web build has no GPU particles).

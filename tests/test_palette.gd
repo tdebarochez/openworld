@@ -49,7 +49,7 @@ func _check():
 		for i in m.get_surface_count():
 			var mat := m.surface_get_material(i) as StandardMaterial3D
 			var albedo := mat.albedo_color
-			if mat.vertex_color_use_as_albedo:  # tintable leaves: albedo kept by seasons.gd
+			if mat in s.leaf_mats:  # tintable leaves: albedo kept by seasons.gd
 				albedo = s.leaf_albedo[s.leaf_mats.find(mat)]
 			assert(_name(albedo) != "", "%s surface %d: %s is not in the palette" % [mat.resource_name, i, albedo])
 			n += 1

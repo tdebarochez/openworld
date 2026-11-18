@@ -35,6 +35,15 @@ const NEAR_DIST := 250.0
 const COARSE_DIST := 1000.0
 const COARSE_RES := 4  # m between coarse terrain vertices (= map pixel size)
 const SKIRT := 4.0  # m the coarse zone's edges hang down
+# Baked ground shading (_shading): soft painted depth without post-processing (the web has no SSAO).
+const SHADE_STEP := COARSE_RES  # m between samples of the broad terms: the coarse grid itself
+const HOLLOW_R := 8  # m: ground lower than the ring this far round is a hollow (or a slope's foot)
+const HOLLOW_DARK := 0.22  # light lost 1.5 m or more below that ring
+const CREST_LIGHT := 0.06  # light gained 1.5 m or more above it
+const FOREST_DARK := 0.15  # light lost on the forest floor
+const CONTACT := 0.3  # light lost at the foot of a tree, bush, rock or house wall
+const HOUSE_SHADE := 3.0  # m the shade reaches out from a house
+const SHADE_MIN := 0.62  # darkest the ground gets, however many shades overlap
 const TREE_ATTEMPTS := 400  # random spots tried per zone; most are rejected (water, slope, clearing)
 const TREE_VARIANTS := 3  # models per species (tools/make_trees.py)
 const BUSH_CLUSTERS := 150  # bush groups tried per zone; only bushes on a forest edge are kept
@@ -174,10 +183,16 @@ func _init() -> void:
 	trunk_shape.height = 2.0
 
 
+## Models carry their baked shading (tools/make_trees.py bake_shade) as sRGB vertex colours, which
+## multiply every material's colour (and a tree's instance colour on its leaves).
 func _load_mesh(path: String) -> ArrayMesh:
 	var scene: Node = load(path).instantiate()
 	var mesh := (scene.find_children("", "MeshInstance3D")[0] as MeshInstance3D).mesh as ArrayMesh
 	scene.free()
+	for s in mesh.get_surface_count():
+		var mat := mesh.surface_get_material(s) as StandardMaterial3D
+		mat.vertex_color_use_as_albedo = true
+		mat.vertex_color_is_srgb = true
 	return mesh
 
 
@@ -524,7 +539,7 @@ func _road(a: Vector2i, b: Vector2i) -> PackedVector2Array:
 
 
 ## Everything man-made touching zone `cell`: the roads/houses mask (per terrain vertex: FREE, CLEAR,
-## ROAD) and the zone's houses per kind (zone-local transforms). Thread-safe.
+## ROAD), the zone's houses per kind (zone-local transforms) and the houses near it. Thread-safe.
 func layout(cell: Vector2i) -> Dictionary:
 	var n := ZONE_SIZE + 1
 	var half := ZONE_SIZE / 2.0
@@ -541,6 +556,7 @@ func layout(cell: Vector2i) -> Dictionary:
 	var plants := []  # per flower kind
 	for k in flowers.size():
 		plants.append([] as Array[Transform3D])
+	var near := []  # every house of the villages around, even across the edge: [world position, yaw, kind]
 	var reach := half + ROAD_MAX + VILLAGE_GRID  # a road touching this zone starts within this range
 	var lo := Vector2i(((origin - Vector2.ONE * reach) / VILLAGE_GRID).floor())
 	var hi := Vector2i(((origin + Vector2.ONE * reach) / VILLAGE_GRID).floor())
@@ -570,6 +586,7 @@ func layout(cell: Vector2i) -> Dictionary:
 			if v.is_empty() or (v.centre - origin).abs().x > half + 40.0 or (v.centre - origin).abs().y > half + 40.0:
 				continue
 			_mark_segment(mask, v.centre - origin, v.centre - origin, 7.0, 9.0)  # the square
+			near.append_array(v.houses)
 			for hs in v.houses:
 				var lp := Vector2(hs[0].x, hs[0].z) - origin
 				_mark_segment(mask, lp, lp, 0.0, house_radius[hs[2]] + 1.0)
@@ -587,7 +604,7 @@ func layout(cell: Vector2i) -> Dictionary:
 				var fl: Vector3 = f[0] - Vector3(origin.x, 0, origin.y)
 				if absf(fl.x) < half and absf(fl.z) < half:
 					plants[f[2]].append(Transform3D(Basis(Vector3.UP, f[1]).scaled(Vector3.ONE * f[3]), fl))
-	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants}
+	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "near_houses": near}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -858,6 +875,10 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 			colors.append(road_color if mask[z * res * mn + x * res] == ROAD else _ground_color(h, nrm.y))
 			heights.append(h)
 			min_h = minf(min_h, h)
+	var trees := tree_transforms(cell, mask)
+	var rocks := rock_transforms(cell, mask) if full else []
+	var bushes := bush_transforms(cell, mask) if full else []
+	var uvs := _shading(cell, res, mask, [[trees, 2.8], [bushes, 1.4], [rocks, 1.3]], lay.near_houses)
 
 	var idx := PackedInt32Array()
 	for z in cells:
@@ -873,6 +894,7 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 				verts.append(verts[i] - Vector3(0, SKIRT, 0))
 				normals.append(normals[i])
 				colors.append(colors[i])
+				uvs.append(uvs[i])
 			for k in n - 1:
 				idx.append_array([edge[k], edge[k + 1], base + k, edge[k + 1], base + k + 1, base + k])
 
@@ -881,15 +903,14 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
 	arrays[Mesh.ARRAY_INDEX] = idx
-	var trees := tree_transforms(cell, mask)
-	var rocks := rock_transforms(cell, mask) if full else []
 	var flw := flower_transforms(cell, mask) if full else []
 	for k in flw.size():
 		flw[k].append_array(lay.flowers[k])  # village beds share the wild flowers' MultiMesh
 	return {"cell": cell, "density": dens, "detail": detail, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
 		"rocks": rocks, "flowers": flw, "houses": lay.houses,
-		"bushes": bush_transforms(cell, mask) if full else [],
+		"bushes": bushes,
 		"lamps": lay.lamps if full else ([] as Array[Transform3D]), "props": lay.props if full else [],
 		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask, res)}
 
@@ -1119,11 +1140,10 @@ func _multimesh(mesh: Mesh, transforms: Array[Transform3D], colors := PackedColo
 	return mmi
 
 
-## Leaves (surface 1) multiply their colour by the MultiMesh instance colour; bark stays as is.
+## Leaves (surface 1) get their own material, recoloured by seasons.gd; COLOR = baked shading ×
+## MultiMesh instance colour (sRGB). Bark keeps its colour.
 func _tintable_leaves(mesh: ArrayMesh) -> ArrayMesh:
-	var mat := mesh.surface_get_material(1).duplicate() as StandardMaterial3D
-	mat.vertex_color_use_as_albedo = true  # mesh has no vertex colours, so COLOR = instance colour
-	mesh.surface_set_material(1, mat)
+	mesh.surface_set_material(1, mesh.surface_get_material(1).duplicate())
 	return mesh
 
 
@@ -1143,6 +1163,86 @@ func _ground_color(h: float, up: float) -> Color:
 	if h > 22.0:
 		return ground[2]  # peaks
 	return ground[3]  # grass
+
+
+## Baked terrain shading per vertex (`res` m grid), read by seasons.TERRAIN_SHADER as UV:
+## x = meadow patch (-1 deep green dip .. 1 light yellow-green patch), y = light multiplier: hollows
+## and slope feet darker, crests lighter, forest floor darker, and a soft contact shade round each of
+## `objects` ([per-model transform lists, radius m at scale 1]) and `houses` (layout's near_houses).
+## The broad terms are sampled on a SHADE_STEP m lattice in world coordinates and interpolated, so
+## every detail level gets the same values at shared points. Deterministic, thread-safe.
+func _shading(cell: Vector2i, res: int, mask: PackedByteArray, objects: Array, houses: Array) -> PackedVector2Array:
+	var origin := Vector2(cell) * ZONE_SIZE
+	var half := ZONE_SIZE / 2
+	var m := ZONE_SIZE / SHADE_STEP + 1
+	var b := HOLLOW_R / SHADE_STEP
+	var g := m + 2 * b
+	var lh := PackedFloat32Array()  # lattice heights with a HOLLOW_R border
+	lh.resize(g * g)
+	for z in g:
+		for x in g:
+			lh[z * g + x] = height(origin.x + (x - b) * SHADE_STEP - half, origin.y + (z - b) * SHADE_STEP - half)
+	var light := PackedFloat32Array()
+	var patch := PackedFloat32Array()
+	for z in m:
+		for x in m:
+			var wx := origin.x + x * SHADE_STEP - half
+			var wz := origin.y + z * SHADE_STEP - half
+			var i := (z + b) * g + x + b
+			var around := 0.0  # mean height of the 8 points HOLLOW_R away (square ring)
+			for d in [-b, b]:
+				around += lh[i + d] + lh[i + d * g] + lh[i + d * (g + 1)] + lh[i + d * (g - 1)]
+			var hollow := around / 8.0 - lh[i]  # > 0 in a hollow or at the foot of a slope, < 0 on a crest
+			var l := 1.0 - HOLLOW_DARK * smoothstep(0.0, 1.5, hollow) + CREST_LIGHT * smoothstep(0.0, 1.5, -hollow)
+			var f := 0.0  # forest floor: where trees grow (tree_transforms' tests, bar the slope)
+			if lh[i] > WATER_LEVEL + 2.0 and lh[i] < 20.0 and mask[z * SHADE_STEP * (ZONE_SIZE + 1) + x * SHADE_STEP] == FREE:
+				f = smoothstep(0.0, 0.3, forest(wx, wz))
+			light.append(l * (1.0 - FOREST_DARK * f))
+			# Meadow patches ~120 m wide, broken up by smaller ones (~30 m); deep green under the trees.
+			var p := noise.get_noise_2d(wx * 2.0 + 9000.0, wz * 2.0) * 1.6 + noise.get_noise_2d(wx * 8.0 - 3000.0, wz * 8.0) * 1.0
+			patch.append(lerpf(clampf(p, -1.0, 1.0), -1.0, 0.7 * f))
+	var n := ZONE_SIZE / res + 1
+	var contact := PackedFloat32Array()
+	contact.resize(n * n)
+	contact.fill(1.0)
+	for group in objects:
+		for list in group[0]:
+			for t: Transform3D in list:
+				var r: float = group[1] * t.basis.x.length()
+				# ponytail: no shade for objects whose shade would cross the zone edge (the neighbour can't
+				# know them, half a blob would show); compute neighbours' placements if the gaps show.
+				if absf(t.origin.x) > half - r or absf(t.origin.z) > half - r:
+					continue
+				var c := Vector2(t.origin.x, t.origin.z)
+				for z in range(ceili((c.y - r + half) / res), floori((c.y + r + half) / res) + 1):
+					for x in range(ceili((c.x - r + half) / res), floori((c.x + r + half) / res) + 1):
+						var d2 := Vector2(x * res - half, z * res - half).distance_squared_to(c) / (r * r)
+						if d2 < 1.0:
+							contact[z * n + x] *= 1.0 - CONTACT * (1.0 - d2) * (1.0 - d2)
+	for hs in houses:  # from the walls, balconies and porch (house_low) out to HOUSE_SHADE m
+		var low: Rect2 = house_low[hs[2]]
+		var rot := Basis(Vector3.UP, -hs[1])
+		var c := Vector2(hs[0].x, hs[0].z) - origin
+		var r: float = house_radius[hs[2]] + HOUSE_SHADE
+		for z in range(maxi(ceili((c.y - r + half) / res), 0), mini(floori((c.y + r + half) / res), n - 1) + 1):
+			for x in range(maxi(ceili((c.x - r + half) / res), 0), mini(floori((c.x + r + half) / res), n - 1) + 1):
+				var l: Vector3 = rot * Vector3(x * res - half - c.x, 0, z * res - half - c.y)
+				var q := Vector2(l.x, l.z)
+				var d := 1.0 - minf(q.distance_to(q.clamp(low.position, low.end)) / HOUSE_SHADE, 1.0)
+				contact[z * n + x] *= 1.0 - CONTACT * d * d
+	var uvs := PackedVector2Array()
+	var k := SHADE_STEP / res
+	for z in n:
+		var z0 := mini(z / k, m - 2)
+		var fz := float(z - z0 * k) / k
+		for x in n:
+			var x0 := mini(x / k, m - 2)
+			var fx := float(x - x0 * k) / k
+			var i := z0 * m + x0
+			var p := lerpf(lerpf(patch[i], patch[i + 1], fx), lerpf(patch[i + m], patch[i + m + 1], fx), fz)
+			var l := lerpf(lerpf(light[i], light[i + 1], fx), lerpf(light[i + m], light[i + m + 1], fx), fz)
+			uvs.append(Vector2(p, maxf(l * contact[z * n + x], SHADE_MIN)))
+	return uvs
 
 
 func _update_hud() -> void:
