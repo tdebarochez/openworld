@@ -295,6 +295,12 @@ var hud := Label.new()
 var place := Label.new()  # top centre: the village or landmark the player is at (_update_place)
 var _place_at := Vector3.INF  # where _update_place last looked
 var fps := Label.new()  # bottom right: frames per second (engine's 1 s average) and visible polygons
+## Over everything at start, the boot screen's colour (project.godot boot_splash/bg_color, also the web
+## loading page): fades out over VEIL_FADE s once the zones around the player are built, so the world
+## appears from the loading screen instead of popping in. Freed after.
+var veil := ColorRect.new()
+const VEIL_FADE := 1.5
+const VEIL_MAX_WAIT := 10.0  # s: fades anyway if the view is still filling by then
 
 
 func _init() -> void:
@@ -434,6 +440,13 @@ func _ready() -> void:
 	layer.add_child(fps)
 	layer.add_child(preload("res://credits.gd").new())  # L: Godot's licence notice (no splash screen)
 	add_child(layer)
+	var top := CanvasLayer.new()
+	top.layer = 100
+	veil.color = ProjectSettings.get_setting("application/boot_splash/bg_color")
+	veil.set_anchors_preset(Control.PRESET_FULL_RECT)
+	veil.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	top.add_child(veil)
+	add_child(top)
 	_update_hud()
 
 
@@ -1521,6 +1534,12 @@ func _process(_delta: float) -> void:
 	var tris := get_viewport().get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE, Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)
 	fps.text = "%d FPS · %.1f ms · %.2f M polygones" % [f, 1000.0 / maxf(f, 1.0), tris / 1e6]
 	_update_place()
+	if is_instance_valid(veil) and veil.modulate.a == 1.0 and (Time.get_ticks_msec() > VEIL_MAX_WAIT * 1000.0 \
+			or jobs.is_empty() and missing_cells_near(player.global_position).is_empty()):
+		veil.modulate.a = 0.999  # started: not again next frame
+		var t := create_tween()
+		t.tween_property(veil, "modulate:a", 0.0, VEIL_FADE).set_trans(Tween.TRANS_SINE)
+		t.tween_callback(veil.get_parent().queue_free)
 
 
 ## Top-centre title: the landmark within PLACE_DIST / 2 of the player, else the nearest village

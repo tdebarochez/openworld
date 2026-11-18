@@ -45,6 +45,9 @@ func _physics_process(_delta: float) -> bool:
 	var p = w.player
 	var V = p.View
 	match frames:
+		1:  # the loading screen's colour covers the start
+			assert(w.veil.modulate.a == 1.0 and w.veil.get_parent().layer > 1, "no loading veil over the start")
+			assert(w.veil.color == ProjectSettings.get_setting("application/boot_splash/bg_color"))
 		30:  # landed
 			_press_c()
 			assert(p.view == V.THIRD and p.tp_cam.current and p.avatar.visible and w.seasons.env.fog_enabled)
@@ -81,6 +84,8 @@ func _physics_process(_delta: float) -> bool:
 			_press_c()
 			assert(p.view == V.FIRST and p.camera.current and not p.avatar.visible and w.seasons.env.fog_enabled)
 			assert(w.seasons.sun.directional_shadow_max_distance < p.ISO_SHADOWS)
+			# The loading screen's colour covers the start, then fades once the view is built.
+			assert(not is_instance_valid(w.veil) or w.veil.modulate.a < 1.0, "the loading veil never fades")
 			# No Godot splash screen, so the game carries Godot's licence notice instead: L shows it.
 			assert(not ProjectSettings.get_setting("application/boot_splash/show_image"))
 			var credits: PanelContainer = w.find_children("*", "PanelContainer", true, false).filter(
