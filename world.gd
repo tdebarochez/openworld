@@ -11,6 +11,20 @@ const VIEW_STEP := 100.0
 const VIEW_MAX := 2000.0  # ~840 zones
 const DENSITY_STEP := 0.5
 const DENSITY_MAX := 10.0
+const FOG_START := 0.3  # share of the view distance where the haze begins (full at the view distance)
+# Light (colours: assets/palette.json): sun, sky fill (ambient energy; a flat colour in Compatibility),
+# light soft sun shadows, AgX tonemapping and grade (saturation, then per-channel curves dark/mid/light).
+const SUN_ENERGY := 1.05
+const AMBIENT := 0.45
+# Compatibility lights in sRGB: a little sun goes a long way, the flat ambient carries the shadows.
+const COMPAT_SUN := 0.3
+const COMPAT_AMBIENT := 0.75
+const COMPAT_AGX_CONTRAST := 1.2
+const SHADOW_OPACITY := 0.95
+const SHADOW_BLUR := 1.5
+const AGX_CONTRAST := 1.7
+const GRADE_SATURATION := 1.4  # AgX desaturates bright colours: brought back after it
+const GRADE := [Color(0.03, 0.05, 0.11), Color(0.53, 0.5, 0.46), Color(1.0, 0.97, 0.9)]  # bluish darks, warm lights
 # Detail by distance. FULL: everything. LIGHT (beyond NEAR_DIST): terrain, trees, houses and water only —
 # no rocks, flowers or collision (nothing out there can be touched). COARSE (beyond COARSE_DIST): LIGHT
 # with a COARSE_RES m terrain grid (16x fewer triangles) and skirts hiding the cracks against finer
@@ -35,7 +49,6 @@ const HOUSE_VARIANTS := 3  # kinds per style
 const LAMP_HEIGHT := 3.4  # m, bottom of the lantern
 const LAMP_ARM := 0.55  # m from the pole to the lantern
 const LAMP_LIGHT := Vector3(LAMP_ARM, LAMP_HEIGHT + 0.2, 0)  # lantern centre = light, in the lamp's frame
-const LAMP_COLOR := Color(1.0, 0.75, 0.42)  # warm sodium-ish
 const LAMP_SHADOW_DIST := 35.0  # m from the camera within which a lamp casts shadows
 const LAMP_ON_SUN := 0.05  # lamps light up once the sun is lower than this (dir.y, ~3° above the horizon)
 enum Prop { BENCH, PLAIN_BENCH, PLANTER }  # village street furniture (_make_props); PLAIN = no backrest
@@ -52,7 +65,6 @@ const LINK_OFFSETS: Array[Vector2i] = [  # squares searched for neighbours (5x5 
 	Vector2i(-2, 0), Vector2i(-1, 0), Vector2i(1, 0), Vector2i(2, 0),
 	Vector2i(-2, 1), Vector2i(-1, 1), Vector2i(0, 1), Vector2i(1, 1), Vector2i(2, 1),
 	Vector2i(-2, 2), Vector2i(-1, 2), Vector2i(0, 2), Vector2i(1, 2), Vector2i(2, 2)]
-const ROAD_COLOR := Color(0.55, 0.45, 0.32)  # dirt; seasons.gd recolours it (5th ground key)
 enum { FREE, CLEAR, ROAD }  # layout mask: CLEAR = no trees/rocks/flowers, ROAD = dirt surface too
 const MAX_JOBS := 4  # zones built in parallel on worker threads
 const MAP_PX := 32  # map pixels per zone side (4 m per pixel)
@@ -74,6 +86,9 @@ var threaded := OS.has_feature("threads")  # false in the web export (no-threads
 var noise := FastNoiseLite.new()
 var seasons := preload("res://seasons.gd").new()
 var terrain_mat: ShaderMaterial = seasons.terrain_mat  # recolours the vertex colours per season
+var ground: Array = seasons.GROUND[seasons.Season.SUMMER]  # sand, rock, peak, grass, road: baked into the terrain
+var road_color: Color = ground[4]  # dirt; seasons.gd recolours it (5th ground key)
+var lamp_color := seasons.colour("lamp")
 var daynight  # daynight.gd, made in _ready
 var weather  # weather.gd, same
 var water_mat := StandardMaterial3D.new()
@@ -115,7 +130,7 @@ func _init() -> void:
 	noise.fractal_octaves = 5
 	seasons.world = self
 	add_child(seasons)
-	water_mat.albedo_color = Color(0.15, 0.4, 0.6, 0.75)
+	water_mat.albedo_color = Color(seasons.colour("water"), 0.75)
 	water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	water_mat.roughness = 0.05
 	# Models from tools/make_trees.py and tools/make_rocks.py (Blender), base at origin.
@@ -674,11 +689,11 @@ func missing_cells_near(p: Vector3) -> Array[Vector2i]:
 ## Street lamp model: lamp_meshes[0] = pole and cap (dark metal), [1] = lantern (`lamp_glass`).
 func _make_lamp() -> void:
 	var metal := StandardMaterial3D.new()
-	metal.albedo_color = Color(0.15, 0.15, 0.16)
+	metal.albedo_color = seasons.colour("ink")
 	metal.roughness = 0.6
-	lamp_glass.albedo_color = Color(0.85, 0.8, 0.65)
+	lamp_glass.albedo_color = seasons.colour("cream")
 	lamp_glass.emission_enabled = true
-	lamp_glass.emission = LAMP_COLOR
+	lamp_glass.emission = lamp_color
 	lamp_glass.emission_energy_multiplier = 0.0  # set_lamps() turns it up at night
 	# Bracket lamp: the lantern hangs from an arm, so the pole isn't under its own light (right below
 	# the light, even a thin pole top throws a metre-wide disc of shadow on the ground).
@@ -718,9 +733,9 @@ func _make_lamp() -> void:
 ## Stone parts are sunk 0.1-0.15 m for uneven ground.
 func _make_props() -> void:
 	var mats := []
-	for c in [Color(0.42, 0.28, 0.16), Color(0.56, 0.55, 0.51), Color(0.24, 0.16, 0.1)]:  # wood, stone, soil
+	for c in ["bark", "stone", "ink"]:  # wood, stone, soil
 		var m := StandardMaterial3D.new()
-		m.albedo_color = c
+		m.albedo_color = seasons.colour(c)
 		m.roughness = 0.9
 		mats.append(m)
 	# [size, centre] of each box, metres
@@ -840,7 +855,7 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 			var nrm := Vector3(grid[i - 1] - grid[i + 1], 2.0 * res, grid[i - g] - grid[i + g]).normalized()
 			verts.append(Vector3(x * res - half, h, z * res - half))
 			normals.append(nrm)
-			colors.append(ROAD_COLOR if mask[z * res * mn + x * res] == ROAD else _ground_color(h, nrm.y))
+			colors.append(road_color if mask[z * res * mn + x * res] == ROAD else _ground_color(h, nrm.y))
 			heights.append(h)
 			min_h = minf(min_h, h)
 
@@ -1000,7 +1015,7 @@ func _attach_zone(d: Dictionary) -> void:
 		for t in lamps:
 			var light := OmniLight3D.new()
 			light.position = t * LAMP_LIGHT
-			light.light_color = LAMP_COLOR
+			light.light_color = lamp_color
 			light.light_energy = 1.6
 			light.omni_range = 11.0
 			light.omni_attenuation = 1.4
@@ -1066,7 +1081,7 @@ func set_density(d: float) -> void:
 func set_view_dist(d: float) -> void:
 	view_dist = d
 	seasons.env.fog_depth_end = d
-	seasons.base.fog = d * 0.4
+	seasons.base.fog = d * FOG_START
 	seasons.set_season(seasons.season)  # re-derives the season's fog start and re-applies the hour
 	for cam in [player.camera, player.tp_cam]:
 		cam.far = d + 50.0
@@ -1122,12 +1137,12 @@ func leaf_tint(p: Vector3) -> Color:
 
 func _ground_color(h: float, up: float) -> Color:
 	if h < WATER_LEVEL + 1.5:
-		return Color(0.76, 0.7, 0.5)  # sand / lakebed
+		return ground[0]  # sand / lakebed
 	if up < 0.8:
-		return Color(0.45, 0.42, 0.4)  # steep = rock
+		return ground[1]  # steep = rock
 	if h > 22.0:
-		return Color(0.92, 0.92, 0.95)  # peaks
-	return Color(0.3, 0.55, 0.2)  # grass
+		return ground[2]  # peaks
+	return ground[3]  # grass
 
 
 func _update_hud() -> void:
@@ -1141,6 +1156,8 @@ func _setup_environment() -> void:
 	env.sky = Sky.new()
 	var sky_mat := ProceduralSkyMaterial.new()
 	# Haze = sky horizon colour; the ground half of the sky matches it so nothing shows past the fog.
+	sky_mat.sky_top_color = seasons.colour("sky")
+	sky_mat.sky_horizon_color = seasons.colour("haze")
 	var haze := sky_mat.sky_horizon_color
 	sky_mat.ground_horizon_color = haze
 	sky_mat.ground_bottom_color = haze
@@ -1149,22 +1166,41 @@ func _setup_environment() -> void:
 	env.fog_mode = Environment.FOG_MODE_DEPTH
 	env.fog_density = 1.0  # depth mode: opacity reached at fog_depth_end
 	env.fog_light_color = haze
-	env.fog_depth_begin = VIEW_DIST * 0.4
+	env.fog_depth_begin = VIEW_DIST * FOG_START
 	env.fog_depth_end = VIEW_DIST
 	env.fog_sky_affect = 0.0
+	# Soft light from the whole sky: shadows stay light and bluish, never black.
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
-		# Web/WebGL2 renderer over-brightens ambient and sky reflections; use a dim flat ambient.
+	env.ambient_light_energy = AMBIENT
+	var compat := RenderingServer.get_current_rendering_method() == "gl_compatibility"
+	if compat:
+		# Web/WebGL2 renderer over-brightens sky ambient and reflections; use a flat ambient of the
+		# haze tinted by the sky (with COMPAT_SUN, matched by eye and by pixel to Forward+).
 		# ponytail: hand-tuned against Forward+ screenshots, retune if lighting changes.
 		env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-		env.ambient_light_color = Color(0.65, 0.75, 0.9)
-		env.ambient_light_energy = 0.1
+		env.ambient_light_color = haze.lerp(sky_mat.sky_top_color, 0.35)
+		env.ambient_light_energy = COMPAT_AMBIENT
 		env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	# Filmic look: AgX keeps bright warm light from going flat yellow, then a gentle grade lifts the
+	# shadows towards blue and warms the highlights (per-channel curves).
+	env.tonemap_mode = Environment.TONE_MAPPER_AGX
+	env.tonemap_agx_contrast = COMPAT_AGX_CONTRAST if compat else AGX_CONTRAST
+	env.adjustment_enabled = true
+	env.adjustment_saturation = GRADE_SATURATION
+	if not compat:  # Compatibility applies the curves far stronger (snow turned beige): saturation only there
+		var curve := Gradient.new()
+		curve.offsets = PackedFloat32Array([0.0, 0.5, 1.0])
+		curve.colors = PackedColorArray(GRADE)
+		env.adjustment_color_correction = GradientTexture1D.new()
+		env.adjustment_color_correction.gradient = curve
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-50, 30, 0)
+	sun.light_color = seasons.colour("sun")
+	sun.light_energy = COMPAT_SUN if compat else SUN_ENERGY
 	sun.shadow_enabled = true
+	sun.shadow_opacity = SHADOW_OPACITY
+	sun.shadow_blur = SHADOW_BLUR
 	add_child(sun)

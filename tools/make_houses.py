@@ -15,6 +15,7 @@ lower than the lantern. world.gd's collision box is the wall and stone vertices 
 high (plinth top, foot of the walls), so what sticks out at that height (steps, firewood) is wood.
 No randomness, so re-running gives the same files.
 """
+import json
 import os
 from math import cos, pi, radians, sin, tan
 
@@ -27,17 +28,20 @@ WALL, ROOF, WOOD, GLASS, STONE = range(5)
 Z = Vector((0, 0, 1))
 PLINTH = 0.3  # default top of the stone plinth
 LOG = 0.34  # height of a wall log
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "palette.json")) as f:
+    PALETTE = json.load(f)["colours"]
 
 
-def linear(srgb):
-    """Blender/glTF colours are linear; the palette below is picked in sRGB like the rest of the game."""
+def linear(colour):
+    """Blender/glTF colours are linear; the game's palette (assets/palette.json) is sRGB hex, by name."""
+    srgb = (int(PALETTE[colour][i:i + 2], 16) / 255 for i in (1, 3, 5))
     return tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in srgb)
 
 
-def material(name, srgb, roughness):
+def material(name, colour, roughness):
     m = bpy.data.materials.new(name)
     bsdf = m.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = (*linear(srgb), 1.0)
+    bsdf.inputs["Base Color"].default_value = (*linear(colour), 1.0)
     bsdf.inputs["Roughness"].default_value = roughness
     return m
 
@@ -645,11 +649,10 @@ def build(name, fn, palette):
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 os.makedirs(OUT, exist_ok=True)
-GLASS_RGB = (0.18, 0.22, 0.28)
-# Palettes: walls, roof, wood, glass, stone (sRGB).
-build("house_0", colombage, [(0.93, 0.88, 0.74), (0.62, 0.29, 0.18), (0.27, 0.18, 0.12), GLASS_RGB, (0.62, 0.58, 0.52)])
-build("house_1", gable_front, [(0.9, 0.79, 0.58), (0.33, 0.34, 0.39), (0.3, 0.2, 0.13), GLASS_RGB, (0.58, 0.56, 0.52)])
-build("house_2", manor, [(0.94, 0.93, 0.88), (0.56, 0.31, 0.21), (0.36, 0.24, 0.15), GLASS_RGB, (0.66, 0.62, 0.55)])
-build("house_3", chalet, [(0.66, 0.44, 0.24), (0.36, 0.33, 0.31), (0.36, 0.22, 0.12), GLASS_RGB, (0.6, 0.6, 0.58)])
-build("house_4", farmhouse, [(0.58, 0.39, 0.23), (0.44, 0.33, 0.27), (0.3, 0.2, 0.12), GLASS_RGB, (0.56, 0.55, 0.53)])
-build("house_5", mazot, [(0.72, 0.52, 0.3), (0.3, 0.3, 0.33), (0.4, 0.26, 0.15), GLASS_RGB, (0.6, 0.58, 0.55)])
+# Palette names: walls, roof, wood, glass, stone.
+build("house_0", colombage, ["cream", "terracotta", "bark", "ink", "stone"])
+build("house_1", gable_front, ["sand", "slate", "bark", "ink", "stone"])
+build("house_2", manor, ["snow", "terracotta", "bark", "ink", "stone"])
+build("house_3", chalet, ["ochre", "slate", "bark", "ink", "stone"])
+build("house_4", farmhouse, ["ochre", "terracotta", "bark", "ink", "stone"])
+build("house_5", mazot, ["ochre", "slate", "bark", "ink", "stone"])

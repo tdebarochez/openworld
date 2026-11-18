@@ -18,7 +18,7 @@
     ],
     "habitat": "plain",
     "height_m": 0.41,
-    "colour": "scarlet red closed cups",
+    "colour": "warm red closed cups",
     "real_plant": "garden tulip (Tulipa gesneriana)"
   },
   {
@@ -29,7 +29,7 @@
     ],
     "habitat": "any",
     "height_m": 0.52,
-    "colour": "bright red four-petalled cups with a black centre",
+    "colour": "warm red four-petalled cups with a dark centre",
     "real_plant": "corn poppy (Papaver rhoeas)"
   },
   {
@@ -41,7 +41,7 @@
     ],
     "habitat": "hills",
     "height_m": 0.32,
-    "colour": "mauve-pink flower spikes on a dark green mound",
+    "colour": "rose-pink flower spikes on a dark green mound",
     "real_plant": "common heather (Calluna vulgaris)"
   },
   {

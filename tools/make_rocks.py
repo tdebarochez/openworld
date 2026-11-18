@@ -8,6 +8,7 @@ one stone material plus an optional moss material on upward-facing facets. Origi
 Y up after export, the bottom ~15% of the rock sits below y=0 so it looks embedded in uneven ground.
 Seeded, so re-running gives the same models.
 """
+import json
 import math
 import os
 import random
@@ -20,17 +21,20 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "
 STONE, MOSS = 0, 1
 SINK = 0.15  # fraction of the rock's height below the origin
 GOLDEN = math.pi * (3 - math.sqrt(5))
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "palette.json")) as f:
+    PALETTE = json.load(f)["colours"]
 
 
-def linear(srgb):
-    """Blender/glTF colours are linear; the palette below is picked in sRGB like the rest of the game."""
+def linear(colour):
+    """Blender/glTF colours are linear; the game's palette (assets/palette.json) is sRGB hex, by name."""
+    srgb = (int(PALETTE[colour][i:i + 2], 16) / 255 for i in (1, 3, 5))
     return tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in srgb)
 
 
-def material(name, srgb):
+def material(name, colour):
     m = bpy.data.materials.new(name)
     bsdf = m.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = (*linear(srgb), 1.0)
+    bsdf.inputs["Base Color"].default_value = (*linear(colour), 1.0)
     bsdf.inputs["Roughness"].default_value = 0.95
     return m
 
@@ -116,9 +120,8 @@ def build(name, fn, seed, grey, moss=None):
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 os.makedirs(OUT, exist_ok=True)
-MOSSY = (0.36, 0.42, 0.26)
-build("rock_0", boulder, 10, (0.45, 0.43, 0.41), MOSSY)
-build("rock_1", slab, 11, (0.5, 0.48, 0.45), MOSSY)
-build("rock_2", standing, 12, (0.42, 0.41, 0.40))
-build("rock_3", pebble, 13, (0.48, 0.46, 0.43))
-build("rock_4", cluster, 14, (0.44, 0.42, 0.40), MOSSY)
+build("rock_0", boulder, 10, "stone", "leaf")
+build("rock_1", slab, 11, "stone", "leaf")
+build("rock_2", standing, 12, "stone")
+build("rock_3", pebble, 13, "stone")
+build("rock_4", cluster, 14, "stone", "leaf")

@@ -18,13 +18,13 @@ const DAY_SECONDS := 1200.0  # real seconds per game day (20 min)
 const SCRUB_SPEED := 2.0  # game hours per real second while + or - is held
 const TAP := 0.25  # game hours per press
 # Multipliers of the season's colours (white = the season's noon look).
-const SUN_WARM := Color(1.0, 0.55, 0.3)
+const SUN_WARM := Color(1.0, 0.62, 0.38)
 const MOON := Color(0.55, 0.65, 1.0)
 const MOON_ENERGY := 0.35
-const DUSK_HAZE := Color(1.45, 0.8, 0.5)
+const DUSK_HAZE := Color(1.3, 0.82, 0.6)
 const NIGHT_HAZE := Color(0.1, 0.14, 0.3)
 const NIGHT_TOP := Color(0.04, 0.07, 0.2)
-const NIGHT_AMBIENT := Color(0.3, 0.4, 0.75)  # Compatibility renderer only (flat ambient)
+const NIGHT_AMBIENT := Color(0.1, 0.14, 0.3)  # Compatibility renderer only (flat ambient)
 const FLASH := 0.7  # sky brightening by a close lightning strike
 # Milky Way: pole of its great circle (22° up towards SE, so the band arches 68° high from SW to NE),
 # core longitude along it from the SW horizon (24° up in the WSW), and glow colours/strength (sRGB).
@@ -149,6 +149,8 @@ func apply() -> void:
 	env.fog_depth_begin = s.fog * (1.0 - 0.6 * (wx.rain if wx else 0.0))
 	env.ambient_light_color = s.ambient * NIGHT_AMBIENT.lerp(Color.WHITE, day) * (1.0 - 0.3 * dim)
 	env.ambient_light_energy = world.seasons.base.ambient_energy * (1.0 + 6.0 * flash.r)
+	# The grade's saturation boost is for clear daylight: softer under overcast, in the low warm sun, at night.
+	env.adjustment_saturation = world.GRADE_SATURATION * (1.0 - 0.45 * dim - 0.25 * warm - 0.2 * (1.0 - day))
 	if floori(time * 60.0) != _applied:  # the clock only shows minutes: don't relayout the HUD every frame
 		_applied = floori(time * 60.0)
 		world._update_hud()
@@ -157,7 +159,7 @@ func apply() -> void:
 ## Overcast sky: towards its own grey, darker.
 static func _grey(c: Color, dim: float) -> Color:
 	var l := c.get_luminance()
-	return c.lerp(Color(l, l, l * 1.05), dim * 0.8) * (1.0 - 0.45 * dim)
+	return c.lerp(Color(l, l, l * 1.05), minf(dim * 1.1, 1.0)) * (1.0 - 0.45 * dim)
 
 
 ## Star field and Milky Way for the sky cover (equirectangular, row 0 = zenith), faded in at night.

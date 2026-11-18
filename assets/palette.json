@@ -1,0 +1,45 @@
+{
+  "_doc": "Single source of the game's colours (sRGB hex). Read by seasons.gd (and through it world.gd, weather.gd) and by tools/make_*.py for model materials: regenerate the models after a change. Season entries take a colour name or a hex value.",
+  "colours": {
+    "grass": "#66a050",
+    "leaf_light": "#8db552",
+    "leaf": "#5b8c45",
+    "leaf_deep": "#2f5e46",
+    "sand": "#e6cf98",
+    "ochre": "#b99b74",
+    "bark": "#7b5a40",
+    "ink": "#3d3538",
+    "cream": "#f0e2c3",
+    "terracotta": "#a95b43",
+    "slate": "#66717f",
+    "stone": "#a3a7a8",
+    "sky": "#64a3e6",
+    "haze": "#f2e9da",
+    "water": "#5aa5b5",
+    "gold": "#dcae55",
+    "rose": "#e99fae",
+    "snow": "#f5f3ee",
+    "sun": "#ffe6c2",
+    "lamp": "#ffcf8f"
+  },
+  "ground": {
+    "_order": "sand, rock, peak, grass, road; summer is what world.gd bakes into the terrain (the shader's keys)",
+    "summer": ["sand", "stone", "snow", "grass", "ochre"],
+    "autumn": ["sand", "stone", "snow", "#b9a75c", "#b98b55"],
+    "winter": ["#e3e6ea", "stone", "snow", "snow", "#d2cbc0"],
+    "spring": ["sand", "stone", "snow", "#98c160", "ochre"]
+  },
+  "autumn_leaves": ["gold", "#dd8a3c", "terracotta", "bark", "#d6a64c"],
+  "dry_leaves": "bark",
+  "fresh_leaves": "leaf_light",
+  "blossom": ["rose", "snow"],
+  "petals": ["rose", "#f3c3cc", "#de8597"],
+  "ice": "#b3cedcf2",
+  "light": {
+    "_doc": "Per season: sun colour and energy relative to summer, haze target and mix, fog start and shadow opacity relative to summer",
+    "summer": {"sun": "#ffffff", "energy": 1.0, "haze": "#ffffff", "mix": 0.0, "fog": 1.0, "shadow": 1.0},
+    "autumn": {"sun": "#ffe2bc", "energy": 0.9, "haze": "#f1d6b4", "mix": 0.45, "fog": 0.8, "shadow": 1.0},
+    "winter": {"sun": "#eef1fb", "energy": 0.7, "haze": "#e4e9ee", "mix": 0.6, "fog": 0.6, "shadow": 0.5},
+    "spring": {"sun": "#fffbee", "energy": 1.05, "haze": "#e6f0f0", "mix": 0.25, "fog": 1.1, "shadow": 1.0}
+  }
+}

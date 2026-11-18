@@ -53,7 +53,7 @@ func _ready() -> void:
 	iso_cam.rotation = Vector3(ISO_PITCH, ISO_YAW, 0)
 	add_child(iso_cam)
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.85, 0.3, 0.2)
+	mat.albedo_color = world.seasons.colour("terracotta")
 	avatar.mesh = CapsuleMesh.new()  # same size as the collision capsule
 	avatar.material_override = mat
 	var nose := MeshInstance3D.new()  # shows which way the player faces

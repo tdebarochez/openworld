@@ -25,15 +25,20 @@ Z = Vector((0, 0, 1))
 GOLDEN = math.pi * (3 - math.sqrt(5))
 
 
-def linear(srgb):
-    """Blender/glTF colours are linear; the palette below is picked in sRGB like the rest of the game."""
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "palette.json")) as f:
+    PALETTE = json.load(f)["colours"]
+
+
+def linear(colour):
+    """Blender/glTF colours are linear; the game's palette (assets/palette.json) is sRGB hex, by name."""
+    srgb = (int(PALETTE[colour][i:i + 2], 16) / 255 for i in (1, 3, 5))
     return tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in srgb)
 
 
-def material(name, srgb):
+def material(name, colour):
     m = bpy.data.materials.new(name)
     bsdf = m.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = (*linear(srgb), 1.0)
+    bsdf.inputs["Base Color"].default_value = (*linear(colour), 1.0)
     bsdf.inputs["Roughness"].default_value = 0.9
     return m
 
@@ -227,21 +232,21 @@ def sunflower(bm, rng):
         leaf(bm, p, i * 2.4 + rng.uniform(-0.3, 0.3), 0.3 - 0.03 * i, 0.1, 0.7, 0.9, segs=3, fold=0.3, peak=0.35)
 
 
-# name -> (builder, seed, [foliage, blossom, (heart)] sRGB, flowers.json entry minus name/file/height)
+# name -> (builder, seed, [foliage, blossom, (heart)] palette names, flowers.json entry minus name/file/height)
 PLANTS = {
-    "snowdrop": (snowdrop, 1, [(0.33, 0.5, 0.4), (0.96, 0.97, 0.95), (0.45, 0.72, 0.3)], dict(
+    "snowdrop": (snowdrop, 1, ["leaf_deep", "snow", "leaf_light"], dict(
         bloom=["winter"], habitat="near_water", colour="white drooping bells with a green heart",
         real_plant="snowdrop (Galanthus nivalis)")),
-    "tulip": (tulip, 2, [(0.35, 0.52, 0.3), (0.86, 0.13, 0.1)], dict(
-        bloom=["spring"], habitat="plain", colour="scarlet red closed cups",
+    "tulip": (tulip, 2, ["leaf", "terracotta"], dict(
+        bloom=["spring"], habitat="plain", colour="warm red closed cups",
         real_plant="garden tulip (Tulipa gesneriana)")),
-    "poppy": (poppy, 3, [(0.3, 0.5, 0.2), (0.88, 0.1, 0.07), (0.12, 0.1, 0.12)], dict(
-        bloom=["summer"], habitat="any", colour="bright red four-petalled cups with a black centre",
+    "poppy": (poppy, 3, ["leaf", "terracotta", "ink"], dict(
+        bloom=["summer"], habitat="any", colour="warm red four-petalled cups with a dark centre",
         real_plant="corn poppy (Papaver rhoeas)")),
-    "heather": (heather, 4, [(0.18, 0.32, 0.16), (0.8, 0.46, 0.7)], dict(
-        bloom=["summer", "autumn"], habitat="hills", colour="mauve-pink flower spikes on a dark green mound",
+    "heather": (heather, 4, ["leaf_deep", "rose"], dict(
+        bloom=["summer", "autumn"], habitat="hills", colour="rose-pink flower spikes on a dark green mound",
         real_plant="common heather (Calluna vulgaris)")),
-    "sunflower": (sunflower, 5, [(0.28, 0.5, 0.17), (0.98, 0.78, 0.1), (0.35, 0.2, 0.08)], dict(
+    "sunflower": (sunflower, 5, ["leaf", "gold", "bark"], dict(
         bloom=["summer", "autumn"], habitat="plain", colour="golden yellow rays around a brown disc",
         real_plant="sunflower (Helianthus annuus)")),
 }
@@ -267,8 +272,8 @@ def build(name, fn, seed, colours):
     height = max(v.co.z for v in bm.verts)
     print(f"{name}: {tris} triangles, {height:.2f} m tall")
     bm.free()
-    for slot, srgb in zip(("foliage", "blossom", "heart"), colours):
-        mesh.materials.append(material(f"{name}_{slot}", srgb))
+    for slot, colour in zip(("foliage", "blossom", "heart"), colours):
+        mesh.materials.append(material(f"{name}_{slot}", colour))
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
     bpy.ops.object.select_all(action="DESELECT")
