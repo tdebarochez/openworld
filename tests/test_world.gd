@@ -126,8 +126,8 @@ func _init() -> void:
 	var kinds := {}
 	var houses := 0
 	var odd := 0  # houses not of their village's main style
-	for gx in range(-5, 5):
-		for gz in range(-5, 5):
+	for gx in range(-7, 7):
+		for gz in range(-7, 7):
 			var g := Vector2i(gx, gz)
 			var v: Dictionary = w.village(g)
 			if not v.is_empty():
@@ -172,6 +172,33 @@ func _init() -> void:
 	assert(villages > 0 and roads > 0 and lamps > villages * 5)
 	assert(kinds.size() == w.HOUSE_KINDS, "every house kind is used")
 	assert(odd < houses * 0.2, "villages should keep mostly one style")
+	# Village density: about 50 villages in the 4 x 4 km round the origin (27 on the old 400 m grid),
+	# centres VILLAGE_SPACING apart, so no two villages' houses ever touch; one close to the spawn.
+	var centres: Array[Vector2] = []
+	var all_houses := []  # [house, village index]
+	var lim := ceili(2000.0 / w.VILLAGE_GRID)
+	for gx in range(-lim - 1, lim + 1):
+		for gz in range(-lim - 1, lim + 1):
+			var v: Dictionary = w.village(Vector2i(gx, gz))
+			if v.is_empty() or absf(v.centre.x) > 2000.0 or absf(v.centre.y) > 2000.0:
+				continue
+			for hs in v.houses:
+				all_houses.append([hs, centres.size()])
+			centres.append(v.centre)
+	var nearest := INF
+	for i in centres.size():
+		nearest = minf(nearest, centres[i].length())
+		for j in i:
+			assert(centres[i].distance_to(centres[j]) >= w.VILLAGE_SPACING, "villages too close")
+	for i in all_houses.size():
+		for j in i:
+			var h1: Array = all_houses[i]
+			var h2: Array = all_houses[j]
+			if h1[1] != h2[1]:
+				assert(Vector2(h1[0][0].x, h1[0][0].z).distance_to(Vector2(h2[0][0].x, h2[0][0].z)) >= w.house_radius[h1[0][2]] + w.house_radius[h2[0][2]], "houses of two villages overlap")
+	print("villages in 4 x 4 km round the origin: %d, nearest to the spawn %.0f m" % [centres.size(), nearest])
+	assert(centres.size() >= 45, "fewer villages than expected")
+	assert(nearest < 150.0, "no village near the spawn")
 	for k in w.HOUSE_KINDS:  # the collision box sits within the house, the lamps' keep-out area covers it
 		var hb := AABB(w.house_centres[k] - w.house_shapes[k].size / 2.0, w.house_shapes[k].size)
 		assert(w.house_low[k].encloses(Rect2(hb.position.x, hb.position.z, hb.size.x, hb.size.z)))
@@ -199,13 +226,13 @@ func _init() -> void:
 	var plants := 0
 	var garden: Array = w.VILLAGE_FLOWERS.map(func(n): return w.flowers.find_custom(func(f): return f.name == n))
 	var spawn_village: Vector2i
-	for gx in range(-5, 5):
-		for gz in range(-5, 5):
+	for gx in range(-7, 7):
+		for gz in range(-7, 7):
 			var g := Vector2i(gx, gz)
 			var v: Dictionary = w.village(g)
 			if v.is_empty():
 				continue
-			if v.centre.distance_to(Vector2(133.7, -143.1)) < 5.0:
+			if v.centre.length() < 150.0:  # the one near the spawn (about (52.6, 82.5))
 				spawn_village = g
 			var again: Dictionary = w._village(g)
 			assert(again.props == v.props and again.flowers == v.flowers)

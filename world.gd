@@ -52,7 +52,8 @@ const BUSH_EDGE := 0.15  # forest() band (~6 m) outside the edge (0) where bushe
 const ROCK_ATTEMPTS := 40  # ~6 rocks per zone on plains, ~30 in hills
 const ROCK_KINDS := 5  # tools/make_rocks.py; rock_3 is a pebble (no collision)
 const FLOWER_CLUSTERS := 40  # flower beds tried per zone; about half fit their species' habitat
-const VILLAGE_GRID := 400.0  # one candidate village per 400 m square, kept only on flat plains
+const VILLAGE_GRID := 280.0  # one candidate village per 280 m square, kept only on flat plains…
+const VILLAGE_SPACING := 200.0  # …and this far from every other village centre (< VILLAGE_GRID)
 const HOUSE_KINDS := 6  # tools/make_houses.py: 0-2 medieval, 3-5 chalets
 const HOUSE_VARIANTS := 3  # kinds per style
 const LAMP_HEIGHT := 3.4  # m, bottom of the lantern
@@ -355,17 +356,32 @@ func flower_transforms(cell: Vector2i, mask := PackedByteArray()) -> Array:
 
 
 ## Centre of the village in the VILLAGE_GRID square `g`, or {} when its spot isn't a dry flat plain
-## (or the dice say no). Pure function of the seed: every zone computes the same villages and roads.
+## (or the dice say no, or it crowds a neighbour). Pure function of the seed: every zone computes the same villages and roads.
 func village_site(g: Vector2i) -> Dictionary:
 	return _memo(_sites, g, _village_site.bind(g))
 
 
 func _village_site(g: Vector2i) -> Dictionary:
+	var s := _village_spot(g)
+	if s.is_empty():
+		return s
+	# Too close to a neighbour's spot (only the 8 squares around can be, VILLAGE_SPACING < VILLAGE_GRID):
+	# the lower seed keeps its village. Even a spot that loses elsewhere still clears this one, so
+	# every pair of villages is VILLAGE_SPACING apart whatever the order zones ask for them.
+	for d in [Vector2i(-1, -1), Vector2i(0, -1), Vector2i(1, -1), Vector2i(-1, 0), Vector2i(1, 0), Vector2i(-1, 1), Vector2i(0, 1), Vector2i(1, 1)]:
+		var o := _village_spot(g + d)
+		if not o.is_empty() and o.centre.distance_to(s.centre) < VILLAGE_SPACING and o.seed < s.seed:
+			return {}
+	return s
+
+
+## The candidate spot of square `g` before spacing: {} unless the dice say yes and it's a dry flat plain.
+func _village_spot(g: Vector2i) -> Dictionary:
 	var h := hash(Vector3i(noise.seed + 3, g.x, g.y))
 	if h % 10 >= 7:
 		return {}
-	var c := (Vector2(g) + Vector2(0.25 + 0.5 * float((h >> 8) & 0xFF) / 255.0,
-		0.25 + 0.5 * float((h >> 16) & 0xFF) / 255.0)) * VILLAGE_GRID
+	var c := (Vector2(g) + Vector2(0.1 + 0.8 * float((h >> 8) & 0xFF) / 255.0,
+		0.1 + 0.8 * float((h >> 16) & 0xFF) / 255.0)) * VILLAGE_GRID
 	if hilliness(c.x, c.y) > 0.2 or height(c.x, c.y) < WATER_LEVEL + 1.5 or _normal(c.x, c.y).y < 0.95:
 		return {}
 	return {"centre": c, "seed": h}
@@ -452,7 +468,7 @@ func _village(g: Vector2i) -> Dictionary:
 				var l: Vector3 = hs[0] + rot * (lp + Vector3((j % 4 - 1.5) * 0.3 + rng.randfn(0, 0.03), 0, (j / 4 - 0.5) * 0.28))
 				bed.append([Vector3(l.x, top, l.z), rng.randf() * TAU, pair[j / 4], rng.randf_range(0.8, 1.15)])
 			if not _near_line(p, roads, ROAD_HALF + 1.0) and _far_from(p, lamps + props, 1.0) \
-					and bed.all(func(b): return not in_house(Vector2(b[0].x, b[0].z), houses, 0.1)):
+					and bed.all(func(b): return not in_house(Vector2(b[0].x, b[0].z), houses, 0.1) and _far_from(Vector2(b[0].x, b[0].z), lamps, 0.6)):
 				props.append([Vector3(p.x, top - PLANTER_TOP, p.y), hs[1], Prop.PLANTER])
 				plants.append_array(bed)
 	return {"centre": c, "houses": houses, "lamps": lamps, "props": props, "flowers": plants}
