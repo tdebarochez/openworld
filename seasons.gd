@@ -89,7 +89,7 @@ var terrain_mat := ShaderMaterial.new()
 var leaf_mats: Array[StandardMaterial3D] = []  # per tree model then bush model, the tintable leaves material
 var leaf_albedo: Array[Color] = []  # its summer colour
 var snowy_mats: Array[ShaderMaterial] = []  # same indices, winter leaves (used for conifers and holly)
-var roof_mats: Array[Material] = []  # per house kind, the roof (surface 1, tools/make_houses.py)
+var roof_mats: Array[Material] = []  # per house kind then cabin kind, the roof (surface 1, tools/make_houses.py, make_cabins.py)
 var snowy_roofs: Array[ShaderMaterial] = []  # same snowy shader: white on the slopes, roof colour below
 var env: Environment
 var sky: ProceduralSkyMaterial
@@ -134,7 +134,7 @@ func setup() -> void:
 		snowy.set_shader_parameter("leaf", mat.albedo_color)
 		snowy.set_shader_parameter("snow", colour("snow"))
 		snowy_mats.append(snowy)
-	for m: Mesh in world.house_meshes:
+	for m: Mesh in _roofed():
 		var roof := m.surface_get_material(1) as StandardMaterial3D
 		roof_mats.append(roof)
 		var snowy := ShaderMaterial.new()
@@ -167,8 +167,9 @@ func set_season(s: Season) -> void:
 	var winter := s == Season.WINTER
 	world.water_mat.albedo_color = ICE if winter else base.water
 	world.water_mat.roughness = 0.4 if winter else base.water_rough
-	for k in world.house_meshes.size():  # snow on the roofs (shared meshes: every zone at once)
-		world.house_meshes[k].surface_set_material(1, snowy_roofs[k] if winter else roof_mats[k])
+	var roofed := _roofed()
+	for k in roofed.size():  # snow on the roofs (shared meshes: every zone at once)
+		roofed[k].surface_set_material(1, snowy_roofs[k] if winter else roof_mats[k])
 	var meshes: Array = world.species + world.bush_meshes  # same order as leaf_mats
 	for model in meshes.size():
 		if leaf_kind(meshes[model]) == world.TreeKind.CONIFER:
@@ -192,6 +193,11 @@ func set_season(s: Season) -> void:
 		pair[0].emitting = s == pair[1]
 		pair[0].visible = s == pair[1]
 	world._update_hud()
+
+
+## Meshes whose surface 1 is a roof that snows: houses, then cabins (not their piers).
+func _roofed() -> Array:
+	return world.house_meshes + world.cabin_meshes.slice(0, world.CABIN_KINDS)
 
 
 ## Instance colour for a tree's leaves (sRGB, multiplied by its leaves material and baked shading).

@@ -65,6 +65,11 @@ const BENCH_RADIUS := 8.0  # m from the village centre: the edge of the dirt squ
 const PLANTER_TOP := 0.2  # m above the ground: the planter's soil, where its flowers stand
 # Village flowers: tulips (spring) in front of one of the summer bloomers, picked per planter or clump.
 const VILLAGE_FLOWERS := ["tulip", "poppy", "sunflower", "heather"]
+const CABIN_KINDS := 3  # tools/make_cabins.py: fisherman's hut, log cabin, stilt cabin, each with its pier
+const CABIN_GRID := 256.0  # one candidate lakeside cabin per square, kept only on a gentle dry shore
+const CABIN_TRIES := 16  # spots tried per square, each walked onto the nearest shoreline
+const CABIN_MARGIN := 24.0  # m: shorelines kept this far inside their square, so cabins stay apart
+const CABIN_CLEAR := 10.0  # m kept free of trees, bushes and rocks round a cabin and along its pier
 const ROAD_HALF := 2.0  # road half-width, metres
 const ROAD_LINKS := 2  # each village gets a road to its nearest villages…
 const ROAD_MAX := 900.0  # …within this distance
@@ -114,6 +119,11 @@ var house_shapes: Array[BoxShape3D] = []  # per kind, the walls' box (eaves and 
 var house_centres: Array[Vector3] = []  # per kind, centre of that box in the house's frame
 var house_low: Array[Rect2] = []  # per kind, x/z extent of all lower than a lantern (balconies, porch, low eaves)
 var house_radius: Array[float] = []  # per kind, from the origin to the farthest roof corner (x/z)
+# cabin_0..2 then their piers pier_0..2 (tools/make_cabins.py); trimesh collision, so the piers' decks,
+# porches and stairs are walkable.
+var cabin_meshes: Array[Mesh] = []
+var cabin_shapes: Array[Shape3D] = []
+var cabin_boxes: Array[AABB] = []
 # Village street lamps: dark pole + lantern (lit at night), a shadow-casting OmniLight each in full zones.
 var lamp_meshes: Array[ArrayMesh] = []
 var lamp_glass := StandardMaterial3D.new()
@@ -127,6 +137,7 @@ var prop_centres: Array[Vector3] = []
 var _sites := {}
 var _villages := {}
 var _roads := {}
+var _cabins := {}
 var _memo_lock := Mutex.new()
 var player: CharacterBody3D
 var hud := Label.new()
@@ -177,6 +188,12 @@ func _init() -> void:
 		house_low.append(low)
 		var full := m.get_aabb()
 		house_radius.append(Vector2(maxf(-full.position.x, full.end.x), maxf(-full.position.z, full.end.z)).length())
+	for file in ["cabin", "pier"]:
+		for k in CABIN_KINDS:
+			var m := _load_mesh("res://assets/cabins/%s_%d.glb" % [file, k])
+			cabin_meshes.append(m)
+			cabin_shapes.append(m.create_trimesh_shape())
+			cabin_boxes.append(m.get_aabb())
 	_make_lamp()
 	_make_props()
 	trunk_shape.radius = 0.3
@@ -538,6 +555,91 @@ func _road(a: Vector2i, b: Vector2i) -> PackedVector2Array:
 	return out
 
 
+## Lakeside cabin in the CABIN_GRID square `g`, or {} when no try found a gentle shore clear of
+## villages and roads: {"kind": 0..CABIN_KINDS-1, "cabin": [world position, yaw], "pier": [world
+## position, yaw]}. The cabin stands on dry ground facing the water (+Z), its pier starts on the
+## shoreline at the water level and reaches out over the lake. Pure function of the seed, like village_site.
+func cabin_site(g: Vector2i) -> Dictionary:
+	return _memo(_cabins, g, _cabin_site.bind(g))
+
+
+func _cabin_site(g: Vector2i) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3i(noise.seed + 6, g.x, g.y))
+	var first := rng.randi()
+	var inner := Rect2(Vector2(g) * CABIN_GRID, Vector2.ONE * CABIN_GRID).grow(-CABIN_MARGIN)
+	for i in CABIN_TRIES:
+		var kind := (first + i * CABIN_KINDS / CABIN_TRIES) % CABIN_KINDS  # all kinds in turn: the big ones fit fewer shores
+		var cb := cabin_boxes[kind]
+		var pb := cabin_boxes[CABIN_KINDS + kind]
+		var s := inner.position + Vector2(rng.randf(), rng.randf()) * inner.size
+		var gap := rng.randf_range(3.0, 6.0)  # m of shore between the cabin's front and the water
+		# Newton steps onto the shoreline (height = WATER_LEVEL) along the slope.
+		var grad := Vector2.ZERO
+		for j in 6:
+			grad = Vector2(height(s.x + 0.5, s.y) - height(s.x - 0.5, s.y), height(s.x, s.y + 0.5) - height(s.x, s.y - 0.5))
+			if grad.length_squared() < 1e-4:
+				break
+			s -= (grad * (height(s.x, s.y) - WATER_LEVEL) / grad.length_squared()).limit_length(40.0)
+		if absf(height(s.x, s.y) - WATER_LEVEL) > 0.05 or grad.length_squared() < 1e-4 or not inner.has_point(s):
+			continue
+		var f := -grad.normalized()  # downhill, towards the water: the cabin's and pier's +Z
+		var r := Vector2(f.y, -f.x)  # their +X
+		var at := func(o: Vector2, x: float, z: float) -> float:
+			var q: Vector2 = o + r * x + f * z
+			return height(q.x, q.y) - WATER_LEVEL
+		# Pier: a gentle bank under its shore end, its far corners over water deep enough for the posts,
+		# no land under the walkway.
+		var ok: bool = at.call(s, 0.0, -1.0) < 0.35 and at.call(s, pb.position.x, pb.end.z) < -0.5 \
+			and at.call(s, pb.end.x, pb.end.z) < -0.5
+		for z in range(1, ceili(pb.end.z)):
+			ok = ok and at.call(s, 0.0, z) < 0.0
+		# Cabin: every footprint corner dry, at most 0.4 m above the centre (the floor is ~0.5 m up) and
+		# 0.75 m below it (posts, steps and stone go down further).
+		var c := s - f * (cb.end.z + gap)
+		var hc := height(c.x, c.y) - WATER_LEVEL
+		for x in [cb.position.x, cb.end.x]:
+			for z in [cb.position.z, cb.end.z]:
+				var hq: float = at.call(c, x, z)
+				ok = ok and hq > 0.35 and hq - hc < 0.4 and hc - hq < 0.75
+		if not ok:
+			continue
+		var vg := Vector2i((c / VILLAGE_GRID).floor())
+		var far := true  # from every village square (its houses reach ~35 m out)
+		for dx in range(-1, 2):
+			for dz in range(-1, 2):
+				var v := village_site(vg + Vector2i(dx, dz))
+				far = far and (v.is_empty() or v.centre.distance_to(c) > 70.0)
+		var roads := _roads_near(c, 30.0)
+		if not far or _near_line(c, roads, CABIN_CLEAR + ROAD_HALF) or _near_line(s, roads, CABIN_CLEAR + ROAD_HALF):
+			continue
+		var yaw := atan2(f.x, f.y)
+		return {"kind": kind, "cabin": [Vector3(c.x, WATER_LEVEL + hc - 0.1, c.y), yaw], "pier": [Vector3(s.x, WATER_LEVEL, s.y), yaw]}
+	return {}
+
+
+## Roads (polylines) that may pass within `r` m of world x/z point `p`.
+func _roads_near(p: Vector2, r: float) -> Array:
+	var out := []
+	var reach := ROAD_MAX + VILLAGE_GRID
+	var lo := Vector2i(((p - Vector2.ONE * reach) / VILLAGE_GRID).floor())
+	var hi := Vector2i(((p + Vector2.ONE * reach) / VILLAGE_GRID).floor())
+	for gx in range(lo.x, hi.x + 1):
+		for gz in range(lo.y, hi.y + 1):
+			var g := Vector2i(gx, gz)
+			var sa := village_site(g)
+			if sa.is_empty():
+				continue
+			for d in LINK_OFFSETS:
+				var sb := village_site(g + d)
+				if d.x < 0 or (d.x == 0 and d.y < 0) or sb.is_empty():
+					continue  # each pair once
+				var bb := Rect2(sa.centre, Vector2.ZERO).expand(sb.centre)
+				if bb.grow(sa.centre.distance_to(sb.centre) * 0.25 + r).has_point(p):
+					out.append(road(g, g + d))
+	return out
+
+
 ## Everything man-made touching zone `cell`: the roads/houses mask (per terrain vertex: FREE, CLEAR,
 ## ROAD), the zone's houses per kind (zone-local transforms) and the houses near it. Thread-safe.
 func layout(cell: Vector2i) -> Dictionary:
@@ -604,7 +706,24 @@ func layout(cell: Vector2i) -> Dictionary:
 				var fl: Vector3 = f[0] - Vector3(origin.x, 0, origin.y)
 				if absf(fl.x) < half and absf(fl.z) < half:
 					plants[f[2]].append(Transform3D(Basis(Vector3.UP, f[1]).scaled(Vector3.ONE * f[3]), fl))
-	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "near_houses": near}
+	var cabins := []  # per cabin_meshes entry (cabins, then piers), zone-local; each in the zone holding its origin
+	for k in CABIN_KINDS * 2:
+		cabins.append([] as Array[Transform3D])
+	var reach_c := half + 40.0  # a cabin's clearing reaches ~30 m from its origin
+	for gx in range(floori((origin.x - reach_c) / CABIN_GRID), floori((origin.x + reach_c) / CABIN_GRID) + 1):
+		for gz in range(floori((origin.y - reach_c) / CABIN_GRID), floori((origin.y + reach_c) / CABIN_GRID) + 1):
+			var cs := cabin_site(Vector2i(gx, gz))
+			if cs.is_empty():
+				continue
+			var a: Vector3 = cs.cabin[0]
+			var b: Vector3 = cs.pier[0] + Basis(Vector3.UP, cs.pier[1]) * Vector3(0, 0, cabin_boxes[CABIN_KINDS + cs.kind].end.z)
+			_mark_segment(mask, Vector2(a.x, a.z) - origin, Vector2(b.x, b.z) - origin, -1.0, CABIN_CLEAR)
+			for j in 2:
+				var it: Array = cs.cabin if j == 0 else cs.pier
+				if cell_of(it[0]) == cell:
+					cabins[j * CABIN_KINDS + cs.kind].append(Transform3D(Basis(Vector3.UP, it[1]), it[0] - Vector3(origin.x, 0, origin.y)))
+	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "near_houses": near,
+		"cabins": cabins}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -909,10 +1028,10 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 	for k in flw.size():
 		flw[k].append_array(lay.flowers[k])  # village beds share the wild flowers' MultiMesh
 	return {"cell": cell, "density": dens, "detail": detail, "arrays": arrays, "heights": heights, "min_h": min_h, "trees": trees,
-		"rocks": rocks, "flowers": flw, "houses": lay.houses,
+		"rocks": rocks, "flowers": flw, "houses": lay.houses, "cabins": lay.cabins,
 		"bushes": bushes,
 		"lamps": lay.lamps if full else ([] as Array[Transform3D]), "props": lay.props if full else [],
-		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask, res)}
+		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses + lay.cabins.slice(0, CABIN_KINDS), mask, res)}
 
 
 ## Top-down MAP_PX² image of a zone (1 px = 4 m): ground colours, hill shading, water, trees, rocks.
@@ -1026,6 +1145,18 @@ func _attach_zone(d: Dictionary) -> void:
 			hcs.shape = house_shapes[kind]
 			hcs.transform = t * Transform3D(Basis(), house_centres[kind])
 			body.add_child(hcs)
+
+	var all_cabins: Array = d.cabins  # cabins, then piers (collision: their trimesh)
+	for k in all_cabins.size():
+		var list: Array[Transform3D] = all_cabins[k]
+		if list.is_empty():
+			continue
+		zone.add_child(_multimesh(cabin_meshes[k], list))
+		for t in list if body else []:
+			var ccs := CollisionShape3D.new()
+			ccs.shape = cabin_shapes[k]
+			ccs.transform = t
+			body.add_child(ccs)
 
 	var lamps: Array[Transform3D] = d.lamps
 	if not lamps.is_empty():
