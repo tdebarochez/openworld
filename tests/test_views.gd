@@ -81,6 +81,17 @@ func _physics_process(_delta: float) -> bool:
 			_press_c()
 			assert(p.view == V.FIRST and p.camera.current and not p.avatar.visible and w.seasons.env.fog_enabled)
 			assert(w.seasons.sun.directional_shadow_max_distance < p.ISO_SHADOWS)
+			# No Godot splash screen, so the game carries Godot's licence notice instead: L shows it.
+			assert(not ProjectSettings.get_setting("application/boot_splash/show_image"))
+			var credits: PanelContainer = w.find_children("*", "PanelContainer", true, false).filter(
+				func(n): return n.get_script() == preload("res://credits.gd"))[0]
+			assert(not credits.visible)
+			_key(KEY_L, true)
+			_key(KEY_L, false)
+			assert(credits.visible and credits.text.text.contains(Engine.get_license_text()), "no Godot licence on L")
+			_key(KEY_L, true)
+			_key(KEY_L, false)
+			assert(not credits.visible)
 			print("VIEWS OK")
 			quit()
 	return false

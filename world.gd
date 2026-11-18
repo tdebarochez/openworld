@@ -432,6 +432,7 @@ func _ready() -> void:
 	fps.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	layer.add_child(fps)
+	layer.add_child(preload("res://credits.gd").new())  # L: Godot's licence notice (no splash screen)
 	add_child(layer)
 	_update_hud()
 
@@ -2053,7 +2054,7 @@ func _shading(cell: Vector2i, res: int, mask: PackedByteArray, objects: Array, h
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/battre des ailes/remonter · Clic planer · Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O/Shift+O objets · P/Shift+P portée · N/Shift+N météo\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m\n%s" % [
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/battre des ailes/remonter · Clic planer · Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O/Shift+O objets · P/Shift+P portée · N/Shift+N météo · L licences\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m\n%s" % [
 		zones.size(), seasons.NAMES[seasons.season], daynight.clock(), density, view_dist, weather.label if weather else ""]
 
 
