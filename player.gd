@@ -28,6 +28,10 @@ const GLIDE_STEER := 10.0  # m/s² horizontal: a glide keeps its momentum and tu
 const AIR_STEER := 30.0  # m/s² of key control in the air: snappy, but momentum (a glide's) isn't lost
 const AIR_DRAG := 1.5  # m/s² slowing the air momentum with no key held: a released glide carries on
 const AIR_GRACE := 0.15  # s off the floor before move_state says fall/glide (slopes and bumps don't flicker)
+# A gliding hen banks into its turns like a plane: atan(sideways acceleration / g), capped.
+const BANK_MAX := 0.61  # rad (35°): GLIDE_STEER at full sideways pull would give 46°
+const BANK_EASE := 5.0  # 1/s exponential easing in and out of the bank (63 % in 0.2 s)
+const HEN_MIDDLE := 0.84  # m above the feet: the body's centre (tools/make_hen.py), the bank's pivot
 
 var world: Node3D  # world.gd — used to keep the player inside existing zones
 var camera := Camera3D.new()
@@ -37,6 +41,7 @@ var arm := SpringArm3D.new()  # third person: pitch pivot at the head, camera at
 var tp_cam := Camera3D.new()
 var iso_cam := Camera3D.new()
 var avatar: Node3D = preload("res://assets/hen/hen.glb").instantiate()  # hen.gd; hidden in first person
+var tilt := Node3D.new()  # the avatar's parent, at the hen's middle: rotation.z is the glide's bank
 var ear := AudioListener3D.new()  # birds are heard from the player, not from a camera behind or far above
 var fp_shadows := 0.0
 ## For the avatar's animations: idle, walk, run, flap, glide, fall or swim; set every physics frame.
@@ -71,9 +76,11 @@ func _ready() -> void:
 	iso_cam.top_level = true  # doesn't turn with the player
 	iso_cam.rotation = Vector3(ISO_PITCH, ISO_YAW, 0)
 	add_child(iso_cam)
-	avatar.position.y = -1.0  # feet at the bottom of the collision capsule
+	tilt.position.y = HEN_MIDDLE - 1.0
+	avatar.position.y = -HEN_MIDDLE  # feet at the bottom of the collision capsule
 	avatar.visible = false
-	add_child(avatar)
+	tilt.add_child(avatar)
+	add_child(tilt)
 	ear.position.y = 0.7
 	add_child(ear)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -172,9 +179,14 @@ func _physics_process(delta: float) -> void:
 	if iso and dir:
 		rotation.y = atan2(-dir.x, -dir.z)
 	var h := Vector2(velocity.x, velocity.z)
+	var bank := 0.0
 	if gliding:  # momentum carries on, speeding up the way the hen faces (or the keys steer)
 		var want := (dir if dir else -global_basis.z) * maxf(speed, GLIDE_SPEED)
+		var was := h
 		h = h.move_toward(Vector2(want.x, want.z), GLIDE_STEER * delta)
+		# Turn rate of the flight path (not the body, which snaps in iso) × speed = sideways pull.
+		# In (x, z) a positive angle_to is a right turn; a positive rotation.z lifts the right wing.
+		bank = clampf(atan(-was.angle_to(h) / delta * h.length() / 9.8), -BANK_MAX, BANK_MAX)
 		velocity.x = h.x
 		velocity.z = h.y
 	elif not swimming and not is_on_floor():  # air: keys steer, but a glide's speed isn't dropped on release
@@ -208,6 +220,7 @@ func _physics_process(delta: float) -> void:
 		move_state = &"run" if ground_speed > SPEED * 1.5 else &"walk"
 	if iso:
 		_follow()
+	tilt.rotation.z = lerpf(tilt.rotation.z, bank, 1.0 - exp(-BANK_EASE * delta))
 	_animate()
 
 
