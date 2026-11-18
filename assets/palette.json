@@ -20,8 +20,12 @@
     "rose": "#e99fae",
     "snow": "#f5f3ee",
     "sun": "#ffe6c2",
-    "lamp": "#ffcf8f"
+    "lamp": "#ffcf8f",
+    "ginger": "#d4935c",
+    "soot": "#4b4346",
+    "ash": "#a19b94"
   },
+  "cats": ["ginger", "soot", "ash"],
   "ground": {
     "_order": "sand, rock, peak, grass, road; summer is what world.gd bakes into the terrain (the shader's keys)",
     "summer": ["sand", "stone", "snow", "grass", "ochre"],

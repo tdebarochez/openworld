@@ -75,6 +75,34 @@ const VILLAGE_EDGE := 4.0
 const VILLAGE_WOBBLE := 4.0
 const VILLAGE_FRINGE := 10.0
 const VILLAGE_REACH := 60.0  # m from a village centre its clearing can reach (roofs ≤ 17 + 2 × 9 m out, + 4 + 4 + 10)
+# Village cats (tools/make_cats.py): 0-3 per village, each on its own bench, coat = MultiMesh instance
+# colour (palette "cats"). The model's origin goes on the seat's front edge (_make_props' seat box).
+enum CatPose { SITTING, LYING }
+const MAX_CATS := 3
+const SEAT_TOP := 0.48  # m above the bench's foot
+const SEAT_FRONT := 0.21  # m from the bench's centre line to the seat's front edge (+Z)
+const CAT_SLIDE := 0.45  # m a cat sits at most from the middle of the bench, along it
+# The tail swings around Z from its pivot (UV, model space), as much as COLOR.a says (0 on the body,
+# 1 at the tip); the phase comes from the cat's position, so a zone's cats are one MultiMesh and no
+# script runs per frame. COLOR.rgb = baked shading × coat, sRGB like StandardMaterial3D's.
+const CAT_SHADER := """
+shader_type spatial;
+uniform float sway = 0.35;  // rad at the tip
+void vertex() {
+	float t = TIME * 1.4 + dot(MODEL_MATRIX[3].xz, vec2(1.3, 2.1));
+	float a = COLOR.a * sway * (sin(t) + 0.3 * sin(t * 2.7 + 1.0));
+	mat2 r = mat2(vec2(cos(a), sin(a)), vec2(-sin(a), cos(a)));
+	VERTEX.xy = UV + r * (VERTEX.xy - UV);
+	NORMAL.xy = r * NORMAL.xy;
+	if (!OUTPUT_IS_SRGB) {
+		COLOR.rgb = mix(pow((COLOR.rgb + vec3(0.055)) * (1.0 / 1.055), vec3(2.4)), COLOR.rgb * (1.0 / 12.92), lessThan(COLOR.rgb, vec3(0.04045)));
+	}
+}
+void fragment() {
+	ALBEDO = COLOR.rgb;
+	ROUGHNESS = 0.9;
+}
+"""
 # Village flowers: tulips (spring) in front of one of the summer bloomers, picked per planter or clump.
 const VILLAGE_FLOWERS := ["tulip", "poppy", "sunflower", "heather"]
 const ROAD_HALF := 2.0  # road half-width, metres
@@ -136,6 +164,9 @@ var lamp_fade := true  # off in the iso view, whose camera is 100 m away (every 
 var prop_meshes: Array[ArrayMesh] = []  # per Prop
 var prop_shapes: Array[BoxShape3D] = []  # per Prop, the mesh's box
 var prop_centres: Array[Vector3] = []
+var cat_meshes: Array[ArrayMesh] = []  # per CatPose; surface 0 = coat (cat_mat), 1 = eyes, 2 = nose
+var cat_mat := ShaderMaterial.new()
+var cat_coats: Array = seasons.colours(seasons.palette.cats)
 # Memoised village sites / villages / roads (pure functions of the seed), shared by worker threads.
 var _sites := {}
 var _villages := {}
@@ -195,6 +226,14 @@ func _init() -> void:
 		house_radius.append(Vector2(maxf(-full.position.x, full.end.x), maxf(-full.position.z, full.end.z)).length())
 	_make_lamp()
 	_make_props()
+	cat_mat.shader = Shader.new()
+	cat_mat.shader.code = CAT_SHADER
+	for pose in ["sitting", "lying"]:  # CatPose order
+		var m := _load_mesh("res://assets/cats/cat_%s.glb" % pose)
+		m.surface_set_material(0, cat_mat)
+		for s in [1, 2]:  # eyes and nose keep their colour on any coat (COLOR carries the instance's)
+			(m.surface_get_material(s) as StandardMaterial3D).vertex_color_use_as_albedo = false
+		cat_meshes.append(m)
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
 
@@ -493,7 +532,16 @@ func _village(g: Vector2i) -> Dictionary:
 					and bed.all(func(b): return not in_house(Vector2(b[0].x, b[0].z), houses, 0.1) and _far_from(Vector2(b[0].x, b[0].z), lamps, 0.6)):
 				props.append([Vector3(p.x, top - PLANTER_TOP, p.y), hs[1], Prop.PLANTER])
 				plants.append_array(bed)
-	return {"centre": c, "houses": houses, "lamps": lamps, "props": props, "flowers": plants}
+	# Cats from their own dice, so changes above never move them: each on a different bench.
+	var cat_rng := RandomNumberGenerator.new()
+	cat_rng.seed = hash(site.seed + 6)
+	var free_benches := props.filter(func(o): return o[2] != Prop.PLANTER)
+	var cats := []  # [bench position, bench yaw, CatPose, coat (cat_coats index), m along the seat]
+	for i in mini(cat_rng.randi_range(0, MAX_CATS), free_benches.size()):
+		var b: Array = free_benches.pop_at(cat_rng.randi() % free_benches.size())
+		cats.append([b[0], b[1], cat_rng.randi() % CatPose.size(), cat_rng.randi() % cat_coats.size(),
+			cat_rng.randf_range(-CAT_SLIDE, CAT_SLIDE)])
+	return {"centre": c, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats}
 
 
 ## True if `p` (world x/z) is at least `r` from every [world position, …] of `things`.
@@ -594,6 +642,9 @@ func layout(cell: Vector2i) -> Dictionary:
 	var plants := []  # per flower kind
 	for k in flowers.size():
 		plants.append([] as Array[Transform3D])
+	var cats := []  # per CatPose: [transforms, coat colours]
+	for k in CatPose.size():
+		cats.append([[] as Array[Transform3D], []])
 	var near := []  # every house of the villages around, even across the edge: [world position, yaw, kind]
 	var reach := half + ROAD_MAX + VILLAGE_GRID  # a road touching this zone starts within this range
 	var lo := Vector2i(((origin - Vector2.ONE * reach) / VILLAGE_GRID).floor())
@@ -642,7 +693,13 @@ func layout(cell: Vector2i) -> Dictionary:
 				var fl: Vector3 = f[0] - Vector3(origin.x, 0, origin.y)
 				if absf(fl.x) < half and absf(fl.z) < half:
 					plants[f[2]].append(Transform3D(Basis(Vector3.UP, f[1]).scaled(Vector3.ONE * f[3]), fl))
-	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "near_houses": near}
+			for cat in v.cats:  # in the zone of its bench
+				var bl: Vector3 = cat[0] - Vector3(origin.x, 0, origin.y)
+				if absf(bl.x) < half and absf(bl.z) < half:
+					var rot := Basis(Vector3.UP, cat[1])
+					cats[cat[2]][0].append(Transform3D(rot, bl + rot * Vector3(cat[4], SEAT_TOP, SEAT_FRONT)))
+					cats[cat[2]][1].append(cat_coats[cat[3]])
+	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats, "near_houses": near}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -997,6 +1054,7 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 		"rocks": rocks, "flowers": flw, "houses": lay.houses,
 		"bushes": bushes,
 		"lamps": lay.lamps if full else ([] as Array[Transform3D]), "props": lay.props if full else [],
+		"cats": lay.cats if full else [],
 		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses, mask, res)}
 
 
@@ -1151,6 +1209,11 @@ func _attach_zone(d: Dictionary) -> void:
 			pcs.shape = prop_shapes[kind]
 			pcs.transform = t * Transform3D(Basis(), prop_centres[kind])
 			body.add_child(pcs)
+
+	var all_cats: Array = d.cats  # full zones only, on the benches; no collision (the bench has it)
+	for pose in all_cats.size():
+		if not all_cats[pose][0].is_empty():
+			zone.add_child(_multimesh(cat_meshes[pose], all_cats[pose][0], PackedColorArray(all_cats[pose][1])))
 
 	var all_flowers: Array = d.flowers
 	for kind in all_flowers.size():
