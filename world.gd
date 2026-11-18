@@ -178,6 +178,7 @@ var prop_centres: Array[Vector3] = []
 var cat_meshes: Array[ArrayMesh] = []  # per CatPose; surface 0 = coat (cat_mat), 1 = eyes, 2 = nose
 var cat_mat := ShaderMaterial.new()
 var cat_coats: Array = seasons.colours(seasons.palette.cats)
+var life := preload("res://life.gd").new()  # smoke, lit windows, laundry, forges, flocks
 # Memoised village sites / villages / roads (pure functions of the seed), shared by worker threads.
 var _sites := {}
 var _villages := {}
@@ -254,6 +255,9 @@ func _init() -> void:
 		cat_meshes.append(m)
 	trunk_shape.radius = 0.3
 	trunk_shape.height = 2.0
+	life.world = self
+	life.setup()
+	add_child(life)
 
 
 ## Models carry their baked shading (tools/make_trees.py bake_shade) as sRGB vertex colours, which
@@ -286,6 +290,7 @@ func _ready() -> void:
 	add_child(weather)
 	add_child(preload("res://birds.gd").new())  # finds the world as its parent
 	add_child(preload("res://clouds.gd").new())  # same
+	add_child(preload("res://ambience.gd").new())  # same
 	var layer := CanvasLayer.new()
 	var map := preload("res://map.gd").new()
 	map.world = self
@@ -822,7 +827,7 @@ func layout(cell: Vector2i) -> Dictionary:
 				if cell_of(it[0]) == cell:
 					cabins[j * CABIN_KINDS + cs.kind].append(Transform3D(Basis(Vector3.UP, it[1]), it[0] - Vector3(origin.x, 0, origin.y)))
 	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats, "near_houses": near,
-		"cabins": cabins}
+		"cabins": cabins, "life": life.zone_layout(cell, mask)}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -1179,7 +1184,7 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 		"rocks": rocks, "flowers": flw, "houses": lay.houses, "cabins": lay.cabins,
 		"bushes": bushes,
 		"lamps": lay.lamps if full else ([] as Array[Transform3D]), "props": lay.props if full else [],
-		"cats": lay.cats if full else [],
+		"cats": lay.cats if full else [], "life": lay.life if full else {},
 		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses + lay.cabins.slice(0, CABIN_KINDS), mask, res)}
 
 
@@ -1288,12 +1293,13 @@ func _attach_zone(d: Dictionary) -> void:
 		var list: Array[Transform3D] = all_houses[kind]
 		if list.is_empty():
 			continue
-		zone.add_child(_multimesh(house_meshes[kind], list))
+		zone.add_child(_multimesh(house_meshes[kind], list, PackedColorArray(), life.house_dice(zone.position, list)))
 		for t in list if body else []:
 			var hcs := CollisionShape3D.new()
 			hcs.shape = house_shapes[kind]
 			hcs.transform = t * Transform3D(Basis(), house_centres[kind])
 			body.add_child(hcs)
+	life.attach(zone, d, body)  # chimney smoke; laundry, forges and flocks in full zones
 
 	var all_cabins: Array = d.cabins  # cabins, then piers (collision: their trimesh)
 	for k in all_cabins.size():
@@ -1409,17 +1415,22 @@ static func _step(v: float, step: float, lo: float, hi: float) -> float:
 	return lo if n > hi + 0.001 else (hi if n < lo - 0.001 else n)
 
 
-## One draw call for every instance of `mesh` in a zone; `colors` (optional) tints each instance.
-func _multimesh(mesh: Mesh, transforms: Array[Transform3D], colors := PackedColorArray()) -> MultiMeshInstance3D:
+## One draw call for every instance of `mesh` in a zone; `colors` (optional) tints each instance,
+## `custom` (optional) is its INSTANCE_CUSTOM in shaders.
+func _multimesh(mesh: Mesh, transforms: Array[Transform3D], colors := PackedColorArray(), custom := PackedColorArray()) -> MultiMeshInstance3D:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = not colors.is_empty()
+	# Compatibility reads custom data without colours as a black instance colour: white ones go with it.
+	mm.use_colors = not colors.is_empty() or not custom.is_empty()
+	mm.use_custom_data = not custom.is_empty()
 	mm.mesh = mesh
 	mm.instance_count = transforms.size()
 	for i in transforms.size():
 		mm.set_instance_transform(i, transforms[i])
 		if mm.use_colors:
-			mm.set_instance_color(i, colors[i])
+			mm.set_instance_color(i, colors[i] if not colors.is_empty() else Color.WHITE)
+		if mm.use_custom_data:
+			mm.set_instance_custom_data(i, custom[i])
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	return mmi

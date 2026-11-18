@@ -332,6 +332,128 @@ def thunder_far():
     return rumble(rng, t, 120, 5) * np.minimum(t / 0.5, 1.0)
 
 
+# --- ambience (ambience.gd): loops are built circularly, like the music, so they never click -----------
+def band_noise(rng, n, lo, hi):
+    """Noise between lo and hi Hz, shaped in the frequency domain: periodic over its n samples."""
+    spec = np.fft.rfft(rng.normal(0, 1, n))
+    f = np.fft.rfftfreq(n, 1 / RATE)
+    spec *= np.exp(-((np.log(np.maximum(f, 1) / np.sqrt(lo * hi)) / np.log(hi / lo) * 2) ** 2))
+    x = np.fft.irfft(spec, n)
+    return x / np.max(np.abs(x))
+
+
+def place(mix, at, sound):
+    """Adds `sound` into the loop `mix` from sample `at`, wrapping past the end."""
+    np.add.at(mix, (at + np.arange(len(sound))) % len(mix), sound)
+
+
+def partials(t, f0, parts, attack=0.002):
+    """Sum of (ratio, amplitude, decay s) partials of f0: bells, anvils."""
+    out = sum(a * np.exp(-t / d) * np.sin(2 * np.pi * f0 * r * t + r) for r, a, d in parts)
+    return out * np.minimum(t / attack, 1.0)
+
+
+def voice(t, f0, formants, buzz=1.0):
+    """Animal call: harmonics of a gliding f0 (array), each weighted by the formants (Hz, bandwidth)."""
+    phase = 2 * np.pi * np.cumsum(f0) / RATE
+    mean = np.mean(f0)
+    out = np.zeros_like(t)
+    for n in range(1, int(4000 / mean)):
+        amp = sum(np.exp(-((n * mean - fc) / bw) ** 2) for fc, bw in formants) + 0.05
+        out += amp * n ** -buzz * np.sin(n * phase)
+    return out
+
+
+def water_lap():
+    """Lake shore, 6 s loop: small waves sloshing on the bank (soft noise swells, fizz as they fall
+    back) and the odd bubble."""
+    rng = np.random.default_rng(600)
+    n = int(6.0 * RATE)
+    t = np.arange(n) / RATE
+    swell = np.zeros(n)
+    for at in np.arange(0.3, 6.0, 1.5) + rng.uniform(-0.2, 0.2, 4):
+        d = (t - at + 3.0) % 6.0 - 3.0  # wrapped time since this wave
+        swell += rng.uniform(0.6, 1.0) * np.where(d < 0, np.exp(-(d / 0.18) ** 2), np.exp(-d / 0.55))
+    fall = np.roll(swell, int(0.25 * RATE))  # the backwash, a moment later
+    mix = band_noise(rng, n, 150, 900) * swell + band_noise(rng, n, 1500, 5000) * fall * 0.25
+    for _ in range(14):  # bubbles: tiny rising chirps
+        tt = np.arange(int(0.04 * RATE)) / RATE
+        f = rng.uniform(350, 700) * (1 + 6 * tt)
+        place(mix, rng.integers(n), np.sin(2 * np.pi * np.cumsum(f) / RATE) * env(tt, 0.002, 0.012) * rng.uniform(0.2, 0.5))
+    return mix
+
+
+def bell():
+    """One toll of a small village bell (~G4): hum, prime, minor-third tierce, quint, nominal and the
+    inharmonic upper partials, each a pair beating slowly, struck with a dull clang."""
+    rng = np.random.default_rng(700)
+    t = np.arange(int(5.0 * RATE)) / RATE
+    f0 = 392.0
+    out = np.zeros_like(t)
+    for r, a, d in [(0.5, 0.5, 2.6), (1.0, 0.8, 1.9), (1.2, 0.55, 1.5), (1.5, 0.3, 1.0), (2.0, 0.6, 1.2),
+                    (2.52, 0.25, 0.6), (3.0, 0.2, 0.45), (4.18, 0.12, 0.25)]:
+        out += a * np.exp(-t / d) * (np.sin(2 * np.pi * f0 * r * t) + 0.7 * np.sin(2 * np.pi * (f0 * r + 0.8 + r) * t + r))
+    clang = lowpass(rng.normal(0, 1, len(t)), 2500) * env(t, 0.001, 0.02) * 1.5
+    return (out + clang) * np.minimum(t / 0.002, 1.0) * np.minimum((t[-1] - t) / 0.5, 1.0)
+
+
+def forge():
+    """Smithy, 4 s loop: hammer blows on the anvil (clang, clang, clang, then two light taps on the
+    face between heats) over the low roar of the hearth."""
+    rng = np.random.default_rng(800)
+    n = int(4.0 * RATE)
+    mix = band_noise(rng, n, 60, 400) * 0.04 * (1 + 0.4 * np.sin(2 * np.pi * np.arange(n) / n))
+    t = np.arange(int(0.8 * RATE)) / RATE
+    for at, vel, f0 in [(0.0, 1.0, 1180), (0.62, 0.9, 1180), (1.24, 1.0, 1185), (1.5, 0.3, 1420), (1.62, 0.25, 1420),
+                        (2.3, 0.95, 1175), (2.92, 0.85, 1180), (3.18, 0.3, 1420)]:
+        hit = partials(t, f0 * rng.uniform(0.99, 1.01), [(1, 1.0, 0.3), (2.71, 0.5, 0.15), (4.1, 0.3, 0.09),
+                                                         (5.4, 0.2, 0.06), (6.8, 0.1, 0.04)])
+        thud = lowpass(rng.normal(0, 1, len(t)), 1800) * env(t, 0.001, 0.015)  # the hammer's face on hot iron
+        place(mix, int(at * RATE), (hit + thud * 0.8) * vel)
+    return mix
+
+
+def cowbells():
+    """Pasture, 9 s loop: two cow bells clonking as the cows graze (bursts of hits, then quiet) and one
+    low moo far off."""
+    rng = np.random.default_rng(900)
+    n = int(9.0 * RATE)
+    mix = np.zeros(n)
+    t = np.arange(int(0.6 * RATE)) / RATE
+    for f0, start in [(610, 0.4), (770, 4.9)]:
+        for burst in (start, start + 2.6):
+            at = burst
+            for _ in range(rng.integers(3, 6)):
+                ring = partials(t, f0, [(1, 1.0, 0.2), (1.47, 0.6, 0.14), (2.09, 0.35, 0.09), (2.94, 0.2, 0.05)])
+                place(mix, int(at * RATE), ring * rng.uniform(0.3, 0.8))
+                at += rng.uniform(0.18, 0.45)
+    tm = np.arange(int(1.7 * RATE)) / RATE
+    f0 = 125 - 25 * tm / tm[-1] + 6 * np.sin(np.pi * tm / tm[-1])
+    moo = voice(tm, f0, [(350, 120), (750, 200)], buzz=1.2) * np.sin(np.pi * np.minimum(tm / 1.7, 1.0)) ** 0.7
+    place(mix, int(2.8 * RATE), moo * 0.35)
+    return mix
+
+
+def sheep():
+    """Flock, 10 s loop: two bleats (the quavering baa-aa) at different pitches and distances, and a small
+    bell tinkling."""
+    rng = np.random.default_rng(1000)
+    n = int(10.0 * RATE)
+    mix = np.zeros(n)
+    for at, f, vel, length in [(0.8, 320, 1.0, 0.9), (5.6, 380, 0.5, 0.7)]:
+        tb = np.arange(int(length * RATE)) / RATE
+        f0 = f * (1 + 0.08 * np.sin(np.pi * tb / length)) * (1 + 0.02 * np.sin(2 * np.pi * 6 * tb))
+        quaver = 1 - 0.55 * (0.5 + 0.5 * np.sin(2 * np.pi * 21 * tb))  # the bleat's tremolo
+        shape = np.sin(np.pi * tb / length) ** 0.5
+        place(mix, int(at * RATE), voice(tb, f0, [(750, 180), (1250, 250), (2600, 400)]) * quaver * shape * vel)
+    t = np.arange(int(0.4 * RATE)) / RATE
+    at = 3.0
+    for _ in range(6):
+        place(mix, int(at * RATE), partials(t, 1480, [(1, 1.0, 0.12), (2.3, 0.4, 0.06)]) * rng.uniform(0.08, 0.15))
+        at += rng.uniform(0.15, 0.5)
+    return mix
+
+
 # --- output -----------------------------------------------------------------------------------------
 def write(name, x, peak, loop=False):
     x = x / np.max(np.abs(x)) * peak
@@ -372,6 +494,9 @@ def main():
     write("land.wav", land(), 0.8)
     write("thunder_near.wav", thunder_near(), 0.9)
     write("thunder_far.wav", thunder_far(), 0.7)
+    for name, fn in [("water_lap", water_lap), ("forge", forge), ("cowbells", cowbells), ("sheep", sheep)]:
+        write(f"{name}.wav", fn(), 0.7, loop=True)
+    write("bell.wav", bell(), 0.8)
 
 
 if __name__ == "__main__":
