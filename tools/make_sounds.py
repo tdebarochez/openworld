@@ -463,6 +463,33 @@ def sheep():
     return mix
 
 
+def campfire():
+    """Campfire, 7 s loop: the soft roar of the flames breathing, a faint hiss of sap, and crackles:
+    a patter of tiny ticks, sharper pops in little bursts and the odd loud snap of a knot."""
+    rng = np.random.default_rng(1100)
+    n = int(7.0 * RATE)
+    t = np.arange(n) / RATE
+    breath = 1 + 0.35 * np.sin(2 * np.pi * 2 * t / 7.0) + 0.2 * np.sin(2 * np.pi * 5 * t / 7.0 + 1.0)  # periodic
+    mix = band_noise(rng, n, 70, 450) * 0.25 * breath + band_noise(rng, n, 2500, 7000) * 0.02
+    tick = np.arange(int(0.012 * RATE)) / RATE
+    for _ in range(260):  # ticks
+        click = band_noise(rng, len(tick), 1500, 6000) * env(tick, 0.0003, 0.0015)
+        place(mix, rng.integers(n), click * rng.uniform(0.04, 0.16))
+    pop = np.arange(int(0.05 * RATE)) / RATE
+    for _ in range(18):  # bursts of pops
+        at = rng.integers(n)
+        for _ in range(rng.integers(2, 6)):
+            body = band_noise(rng, len(pop), 600, 3500) * env(pop, 0.0004, 0.006)
+            place(mix, at, body * rng.uniform(0.25, 0.6))
+            at += int(rng.uniform(0.02, 0.12) * RATE)
+    snap = np.arange(int(0.15 * RATE)) / RATE
+    for at in (1.3, 4.6):  # knots splitting: crack and a dull knock
+        crack = band_noise(rng, len(snap), 1200, 6000) * env(snap, 0.0003, 0.01)
+        knock = np.sin(2 * np.pi * 140 * snap) * env(snap, 0.001, 0.02)
+        place(mix, int((at + rng.uniform(-0.2, 0.2)) * RATE), crack + knock * 0.4)
+    return mix
+
+
 # --- output -----------------------------------------------------------------------------------------
 def write(name, x, peak, loop=False):
     x = x / np.max(np.abs(x)) * peak
@@ -504,7 +531,8 @@ def main():
     write("flap.wav", flap(), 0.6)
     write("thunder_near.wav", thunder_near(), 0.9)
     write("thunder_far.wav", thunder_far(), 0.7)
-    for name, fn in [("water_lap", water_lap), ("forge", forge), ("cowbells", cowbells), ("sheep", sheep)]:
+    for name, fn in [("water_lap", water_lap), ("forge", forge), ("cowbells", cowbells), ("sheep", sheep),
+                     ("campfire", campfire)]:
         write(f"{name}.wav", fn(), 0.7, loop=True)
     write("bell.wav", bell(), 0.8)
 

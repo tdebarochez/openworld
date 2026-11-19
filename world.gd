@@ -282,6 +282,7 @@ var cat_meshes: Array[ArrayMesh] = []  # per CatPose; surface 0 = coat (cat_mat)
 var cat_mat := ShaderMaterial.new()
 var cat_coats: Array = seasons.colours(seasons.palette.cats)
 var life := preload("res://life.gd").new()  # smoke, lit windows, laundry, forges, flocks
+var camps := preload("res://campfires.gd").new()  # campfires in the woods, far from the villages
 # Memoised village sites / villages / roads (pure functions of the seed), shared by worker threads.
 var _sites := {}
 var _villages := {}
@@ -387,6 +388,9 @@ func _init() -> void:
 	life.world = self
 	life.setup()
 	add_child(life)
+	camps.world = self
+	camps.setup()  # after life: borrows its smoke
+	add_child(camps)
 
 
 ## Models carry their baked shading (tools/make_trees.py bake_shade) as sRGB vertex colours, which
@@ -1287,7 +1291,8 @@ func layout(cell: Vector2i) -> Dictionary:
 					var tilt := Basis(Quaternion(Vector3.UP, _normal(r[0].x, r[0].z)))
 					rubble[r[2]].append(Transform3D((tilt * Basis(Vector3.UP, r[1])).scaled(Vector3.ONE * r[3]), r[0] - Vector3(origin.x, 0, origin.y)))
 	return {"mask": mask, "houses": houses, "lamps": lamps, "props": props, "flowers": plants, "cats": cats, "near_houses": near,
-		"cabins": cabins, "landmarks": marks, "features": features, "rubble": rubble, "life": life.zone_layout(cell, mask)}
+		"cabins": cabins, "landmarks": marks, "features": features, "rubble": rubble, "life": life.zone_layout(cell, mask),
+		"camps": camps.zone_layout(cell, mask)}
 
 
 ## Marks mask vertices within `road` of segment a-b (zone-local x/z) as ROAD, within `clear` as CLEAR.
@@ -1679,7 +1684,7 @@ func _build_zone(cell: Vector2i, detail := Detail.FULL) -> Dictionary:
 		"rocks": rocks, "flowers": flw, "houses": lay.houses, "cabins": lay.cabins,
 		"bushes": bushes, "landmarks": lay.landmarks, "features": lay.features,
 		"lamps": lay.lamps if full else ([] as Array[Transform3D]), "props": lay.props if full else [],
-		"cats": lay.cats if full else [], "life": lay.life if full else {},
+		"cats": lay.cats if full else [], "life": lay.life if full else {}, "camps": lay.camps,
 		"map": _map_tile(heights, colors, normals, trees, rocks, lay.houses + lay.cabins.slice(0, CABIN_KINDS), mask, res)}
 
 
@@ -1795,6 +1800,7 @@ func _attach_zone(d: Dictionary) -> void:
 			hcs.transform = t * Transform3D(Basis(), house_centres[kind])
 			body.add_child(hcs)
 	life.attach(zone, d, body)  # chimney smoke; laundry, forges and flocks in full zones
+	camps.attach(zone, d, body)  # flames and smoke; the camp, its collision and light in full zones
 
 	var all_cabins: Array = d.cabins  # cabins, then piers (collision: their trimesh)
 	for k in all_cabins.size():

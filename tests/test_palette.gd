@@ -41,7 +41,7 @@ func _check():
 	assert(s.GROUND[s.Season.SUMMER] == s.colours(s.palette.ground.summer))
 
 	# Model materials: every surface of every model is a palette colour (summer leaves before tinting).
-	var meshes: Array = w.species + w.bush_meshes + w.rock_meshes + w.house_meshes
+	var meshes: Array = w.species + w.bush_meshes + w.rock_meshes + w.house_meshes + w.camps.meshes
 	for f in w.flowers:
 		meshes.append(f.mesh)
 	var n := 0
@@ -69,5 +69,6 @@ func _check():
 	for m: Mesh in w.cat_meshes:  # surface 0 = coat: the cat shader × the instance's coat
 		for i in range(1, m.get_surface_count()):
 			assert(_name(m.surface_get_material(i).albedo_color) != "", "cat eyes or nose colour")
+	assert(_name(w.camps.flame_mat.get_shader_parameter("core")) == "flame" and _name(w.camps.ember_mat.emission) == "ember", "campfire flames")
 	assert(_name(s.base.top) == "sky" and _name(s.base.haze) == "haze" and _name(s.base.sun) == "sun")
 	return true

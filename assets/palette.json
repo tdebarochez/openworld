@@ -29,7 +29,8 @@
     "beak": "#efa43c",
     "ember": "#ff8a3d",
     "smoke": "#d9d4cc",
-    "limestone": "#cdbd9c"
+    "limestone": "#cdbd9c",
+    "flame": "#ffd98a"
   },
   "cats": ["ginger", "soot", "ash"],
   "laundry": ["snow", "cream", "rose", "sky", "gold", "leaf_light", "terracotta"],
