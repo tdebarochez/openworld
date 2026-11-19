@@ -33,7 +33,7 @@ Le monde se génère au fil des déplacements : prairies, forêts, lacs et monta
 | ZQSD / WASD | Se déplacer (touches physiques, donc ZQSD sur un clavier AZERTY) |
 | Shift | Courir |
 | Espace | Sauter. En l'air : battre des ailes, jusqu'à 3 fois. Dans l'eau : remonter |
-| Clic gauche maintenu en l'air | Planer |
+| Clic gauche maintenu en l'air | Planer. Souris vers le haut : cabrer (on remonte en perdant de la vitesse, jusqu'au décrochage) ; vers le bas : piquer (on accélère en perdant de l'altitude) |
 | Souris | Regarder autour de soi |
 | C | Changer de vue : première personne, troisième personne, isométrique |
 | M | Carte |

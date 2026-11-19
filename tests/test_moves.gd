@@ -32,6 +32,13 @@ func _mouse(down: bool) -> void:
 	Input.flush_buffered_events()
 
 
+func _motion(dy: float) -> void:  # mouse moved down by dy pixels (up if negative)
+	var e := InputEventMouseMotion.new()
+	e.relative = Vector2(0, dy)
+	Input.parse_input_event(e)
+	Input.flush_buffered_events()
+
+
 func _frames(n: int) -> void:
 	for i in n:
 		await physics_frame
@@ -229,6 +236,37 @@ func _run() -> void:
 		await physics_frame
 	await _frames(60)
 	assert(p.is_on_floor() and absf(p.tilt.rotation.z) < 0.01, "banked on the ground")
+
+	# Pitch with the mouse while gliding: a dive speeds up and sinks faster, pulling up out of it climbs
+	# and slows down, a long climb stalls and sinks; on the ground the pitch levels out again.
+	p.global_position = spot + Vector3(0, 120, 0)
+	p.velocity = Vector3.ZERO
+	p.rotation = Vector3.ZERO
+	_mouse(true)
+	await _frames(60)
+	assert(p.move_state == &"glide", "state %s" % p.move_state)
+	var level_speed: float = p.glide_speed
+	var level_sink: float = p.velocity.y
+	_motion(150)  # mouse down: nose down
+	assert(p.pitch < -0.5, "mouse down should dive, pitch %f" % p.pitch)
+	await _frames(60)
+	print("level %.1f m/s sinking %.1f; dive %.1f m/s sinking %.1f" % [level_speed, level_sink, p.glide_speed, p.velocity.y])
+	assert(p.glide_speed > level_speed + 4.0 and p.velocity.y < level_sink - 4.0, "a dive should be faster and steeper")
+	assert(p.tilt.rotation.x < -0.3, "the hen's nose should point down")
+	var fast: float = p.glide_speed
+	_motion(-300)  # mouse up: nose up
+	await _frames(75)  # the pull-out takes about a second
+	assert(p.velocity.y > 0.0, "pulling up out of a dive should climb, got %f" % p.velocity.y)
+	assert(p.tilt.rotation.x > 0.2)
+	await _frames(240)
+	assert(p.glide_speed < fast and p.velocity.y < 0.0, "a long climb should slow down and stall")
+	_mouse(false)
+	for i in 900:
+		if p.is_on_floor():
+			break
+		await physics_frame
+	await _frames(90)
+	assert(absf(p.pitch) < 0.05 and absf(p.tilt.rotation.x) < 0.05, "pitch not levelled after landing")
 
 	# The click that takes the mouse back after Escape doesn't glide.
 	_key(KEY_ESCAPE, true)

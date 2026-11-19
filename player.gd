@@ -32,6 +32,19 @@ const AIR_GRACE := 0.15  # s off the floor before move_state says fall/glide (sl
 const BANK_MAX := 0.61  # rad (35°): GLIDE_STEER at full sideways pull would give 46°
 const BANK_EASE := 5.0  # 1/s exponential easing in and out of the bank (63 % in 0.2 s)
 const HEN_MIDDLE := 0.84  # m above the feet: the body's centre (tools/make_hen.py), the bank's pivot
+# Pitch, with the mouse's up/down while gliding (mouse up = nose up): a dive trades height for speed,
+# pulling up trades it back for height, and too slow the wings stall and the hen sinks. The glide's
+# speed: d(speed)/dt = -g·sin(pitch) + (GLIDE_SPEED - speed)·(GLIDE_PULL or GLIDE_DRAG); its climb rate
+# = speed·sin(pitch) + GLIDE_FALL, the lift fading out towards GLIDE_MIN (then it sinks at STALL_FALL).
+const PITCH_UP := 0.45  # rad, nose up
+const PITCH_DOWN := 0.7  # rad, nose down
+const PITCH_SENS := 0.004  # rad per pixel of mouse motion
+const PITCH_EASE := 6.0  # 1/s the hen's body follows the pitch (and levels out after the glide)
+const GLIDE_MIN := 3.0  # m/s: stalled, no lift left (full lift from GLIDE_MIN + 4)
+const GLIDE_MAX := 34.0  # m/s at the bottom of a long dive
+const GLIDE_PULL := 2.5  # 1/s: slower than GLIDE_SPEED, a level glide picks up towards it (as before)…
+const GLIDE_DRAG := 0.25  # 1/s: …faster (after a dive), drag brings it back down, slowly
+const STALL_FALL := -5.0  # m/s sink with no lift left
 
 var world: Node3D  # world.gd — used to keep the player inside existing zones
 var camera := Camera3D.new()
@@ -52,6 +65,9 @@ var air := 0.0  # s since the feet last touched the floor
 var space_was := false  # Space held last frame: a flap needs a fresh press, holding it doesn't flutter
 var mouse_free := false  # released with Escape
 var glide_ok := true  # false for the click that takes the mouse back: it captures, it doesn't glide
+var pitch := 0.0  # rad, nose up > 0: the glide's pitch, set with the mouse while gliding
+var glide_speed := GLIDE_SPEED  # m/s the glide flies at (dives speed it up, climbs slow it down)
+var was_gliding := false
 
 
 func _ready() -> void:
@@ -123,6 +139,11 @@ func _unhandled_input(e: InputEvent) -> void:
 			iso_cam.size = clampf(iso_cam.size * k, 20.0, 120.0)
 		else:
 			arm.spring_length = clampf(arm.spring_length * k, 2.0, 15.0)
+	elif e is InputEventMouseMotion and move_state == &"glide" and not mouse_free:
+		# Gliding: the mouse's up/down pitches the hen (mouse up = nose up) instead of tilting the view.
+		pitch = clampf(pitch - e.relative.y * PITCH_SENS, -PITCH_DOWN, PITCH_UP)
+		if view != View.ISO:
+			rotate_y(-e.relative.x * MOUSE_SENS)
 	elif e is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and view != View.ISO:
 		rotate_y(-e.relative.x * MOUSE_SENS)
 		if view == View.FIRST:
@@ -160,9 +181,22 @@ func _physics_process(delta: float) -> void:
 			velocity.y = maxf(velocity.y, FLAP)
 			flap_time = FLAP_ANIM
 			sfx.flap()
-		gliding = velocity.y < 0.0 and glide_ok and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-		if gliding and velocity.y < GLIDE_FALL:
-			velocity.y = minf(velocity.y + GLIDE_BRAKE * delta, GLIDE_FALL)
+		# A glide starts falling and carries on while the button is held, climbing included.
+		gliding = glide_ok and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and (velocity.y < 0.0 or was_gliding)
+		if gliding:
+			if not was_gliding:
+				# Full lift from the start, even from a standstill jump (a stall only comes from pulling up).
+				glide_speed = maxf(Vector2(velocity.x, velocity.z).length(), GLIDE_MIN + 4.0)
+			# The pick-up only works nose level or down: climbing, it would fly for ever.
+			var pull := GLIDE_PULL * (1.0 - smoothstep(0.0, 0.1, pitch))
+			var settle := (GLIDE_SPEED - glide_speed) * (pull if glide_speed < GLIDE_SPEED else GLIDE_DRAG)
+			glide_speed = clampf(glide_speed + (settle - 9.8 * sin(pitch)) * delta, GLIDE_MIN, GLIDE_MAX)
+			var lift := smoothstep(GLIDE_MIN, GLIDE_MIN + 4.0, glide_speed)
+			if lift < 0.5:  # stalling: the nose drops by itself
+				pitch = move_toward(pitch, -0.15, (1.0 - lift) * delta)
+			var climb := lerpf(STALL_FALL, GLIDE_FALL, lift) + glide_speed * sin(pitch) * lift
+			if velocity.y < climb:  # above it (a wing beat's rise), gravity alone slows it down
+				velocity.y = move_toward(velocity.y, climb, GLIDE_BRAKE * delta)
 	else:
 		flaps = MAX_FLAPS
 		if space:
@@ -180,8 +214,8 @@ func _physics_process(delta: float) -> void:
 		rotation.y = atan2(-dir.x, -dir.z)
 	var h := Vector2(velocity.x, velocity.z)
 	var bank := 0.0
-	if gliding:  # momentum carries on, speeding up the way the hen faces (or the keys steer)
-		var want := (dir if dir else -global_basis.z) * maxf(speed, GLIDE_SPEED)
+	if gliding:  # momentum carries on at the glide's speed, the way the hen faces (or the keys steer)
+		var want := (dir if dir else -global_basis.z) * glide_speed
 		var was := h
 		h = h.move_toward(Vector2(want.x, want.z), GLIDE_STEER * delta)
 		# Turn rate of the flight path (not the body, which snaps in iso) × speed = sideways pull.
@@ -221,6 +255,10 @@ func _physics_process(delta: float) -> void:
 	if iso:
 		_follow()
 	tilt.rotation.z = lerpf(tilt.rotation.z, bank, 1.0 - exp(-BANK_EASE * delta))
+	if not gliding:  # next glide starts level-ish
+		pitch = move_toward(pitch, 0.0, 1.5 * delta)
+	tilt.rotation.x = lerpf(tilt.rotation.x, pitch if gliding else 0.0, 1.0 - exp(-PITCH_EASE * delta))
+	was_gliding = gliding
 	_animate()
 
 

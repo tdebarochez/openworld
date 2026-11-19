@@ -2073,7 +2073,7 @@ func _shading(cell: Vector2i, res: int, mask: PackedByteArray, objects: Array, h
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/battre des ailes/remonter · Clic planer · Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O/Shift+O objets · P/Shift+P portée · N/Shift+N météo · L licences\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m\n%s" % [
+	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/battre des ailes/remonter · Clic planer (souris haut/bas : cabrer/piquer) ·Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O/Shift+O objets · P/Shift+P portée · N/Shift+N météo · L licences\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m\n%s" % [
 		zones.size(), seasons.NAMES[seasons.season], daynight.clock(), density, view_dist, weather.label if weather else ""]
 
 
