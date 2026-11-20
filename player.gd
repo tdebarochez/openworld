@@ -18,7 +18,7 @@ const ISO_PITCH := -0.6155  # -atan(1/sqrt(2))
 const ISO_YAW := PI / 4.0
 const ISO_DIST := 100.0  # m back along the view ray: high enough to clear the hills in front
 const ISO_SHADOWS := 220.0  # sun shadow range from the camera in iso view (default 100 m ends before the player)
-# Hen moves: Space in the air flaps, the left mouse button held while falling glides.
+# Hen moves: Space in the air flaps; falling, once the wing beat is over, the hen glides by itself.
 const FLAP := 4.5  # m/s up per wing beat (not added: mashing can't stack): +1 m at a jump's apex (v²/2g)
 const MAX_FLAPS := 3  # per airtime, refilled on the ground and in water: a flutter onto a roof, not flight
 const FLAP_ANIM := 0.4  # s of &"flap" after a jump or a wing beat
@@ -64,8 +64,7 @@ var flaps := MAX_FLAPS  # wing beats left in this airtime
 var flap_time := 0.0  # s left of &"flap"
 var air := 0.0  # s since the feet last touched the floor
 var space_was := false  # Space held last frame: a flap needs a fresh press, holding it doesn't flutter
-var mouse_free := false  # released by the pause menu (menu.gd)
-var glide_ok := true  # false for the click that takes the mouse back: it captures, it doesn't glide
+var mouse_free := false  # released by the pause menu (menu.gd), taken back by a click
 var pitch := 0.0  # rad, nose up > 0: the glide's pitch, set with the mouse while gliding
 var glide_speed := GLIDE_SPEED  # m/s the glide flies at (dives speed it up, climbs slow it down)
 var was_gliding := false
@@ -152,9 +151,6 @@ func _unhandled_input(e: InputEvent) -> void:
 		else:  # third person: tilt the arm, from just above the ground to well overhead
 			arm.rotation.x = clampf(arm.rotation.x - e.relative.y * MOUSE_SENS, -1.3, 0.4)
 	elif e is InputEventMouseButton and e.pressed:
-		# Own bookkeeping rather than Input.mouse_mode, which headless (tests) never reports as captured.
-		if e.button_index == MOUSE_BUTTON_LEFT:
-			glide_ok = not mouse_free
 		mouse_free = false
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -179,8 +175,9 @@ func _physics_process(delta: float) -> void:
 			velocity.y = maxf(velocity.y, FLAP)
 			flap_time = FLAP_ANIM
 			sfx.flap()
-		# A glide starts falling and carries on while the button is held, climbing included.
-		gliding = glide_ok and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and (velocity.y < 0.0 or was_gliding)
+		# A glide starts as soon as the wings stop beating and the hen falls (not off a mere bump:
+		# AIR_GRACE), and carries on, climbing included, until the next wing beat or the ground.
+		gliding = flap_time <= 0.0 and air > AIR_GRACE and (velocity.y < 0.0 or was_gliding)
 		if gliding:
 			if not was_gliding:
 				# Full lift from the start, even from a standstill jump (a stall only comes from pulling up).

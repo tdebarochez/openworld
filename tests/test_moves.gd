@@ -1,9 +1,9 @@
 extends SceneTree
 # Run: godot --headless --path . -s tests/test_moves.gd
 # Hen moves on a flat platform high above the terrain: Space held on the ground jumps once (no
-# flutter), a Space press in the air flaps (at most MAX_FLAPS per airtime, refilled on landing), the
-# left mouse button held while falling glides (sink capped, lands further than a plain jump, banks
-# into turns), and move_state follows along.
+# flutter), a Space press in the air flaps (at most MAX_FLAPS per airtime, refilled on landing), a
+# falling hen glides by itself once its wings stop beating (sink capped, lands further than a
+# ballistic jump, banks into turns), and move_state follows along.
 
 var w
 var p
@@ -64,14 +64,12 @@ func _place(spot: Vector3) -> void:
 	assert(p.is_on_floor(), "not standing on the platform")
 
 
-## Jumps (Space tapped, held for `hold` frames) with `flaps` wing beats at the apexes, holding `keys`
-## and the mouse button if `glide`. Returns [highest point above the start, horizontal distance].
-func _jump(flaps: int, keys: Array = [], glide := false, hold := 1) -> Array:
+## Jumps (Space tapped, held for `hold` frames) with `flaps` wing beats at the apexes, holding `keys`,
+## and glides down. Returns [highest point above the start, horizontal distance].
+func _jump(flaps: int, keys: Array = [], hold := 1) -> Array:
 	var start: Vector3 = p.global_position
 	for k in keys:
 		_key(k, true)
-	if glide:
-		_mouse(true)
 	_key(KEY_SPACE, true)
 	await _frames(hold)
 	_key(KEY_SPACE, false)
@@ -91,17 +89,13 @@ func _jump(flaps: int, keys: Array = [], glide := false, hold := 1) -> Array:
 				assert(p.move_state == &"flap")
 			else:
 				assert(p.velocity.y < 0.0, "flapped past MAX_FLAPS")
-		if glide and p.velocity.y < 0.0 and p.flap_time < -0.4:  # well into the glide
+		if p.velocity.y < 0.0 and p.flap_time < -0.4:  # well into the glide
 			assert(p.velocity.y > p.GLIDE_FALL - 0.05, "glide sinks too fast: %f" % p.velocity.y)
 			assert(p.move_state == &"glide", "state %s" % p.move_state)
 			sink_checked = true
-		elif not glide and p.velocity.y < -3.0:
-			assert(p.move_state == &"fall", "state %s" % p.move_state)
 	for k in keys:
 		_key(k, false)
-	if glide:
-		_mouse(false)
-		assert(sink_checked, "never glided")
+	assert(sink_checked, "never glided")
 	await _frames(3)
 	assert(p.is_on_floor(), "no landing")
 	assert(p.flaps == p.MAX_FLAPS, "flaps not refilled on landing")
@@ -163,31 +157,33 @@ func _run() -> void:
 		assert(heights[n] > heights[n - 1] + 0.5, "flap %d didn't lift" % n)
 	assert(absf(heights[p.MAX_FLAPS + 1] - heights[p.MAX_FLAPS]) < 0.1, "more than MAX_FLAPS flaps")
 
-	# Gliding from the same spot, same keys, lands further.
-	var plain: Array = await _jump(0, [KEY_W])
+	# Gliding (no click: it comes by itself) lands further than a ballistic jump would.
+	var plain: float = p.SPEED * 2.0 * p.JUMP / 9.8
+	var glide: Array = await _jump(0, [KEY_W])
 	await _place(spot)
-	var glide: Array = await _jump(0, [KEY_W], true)
+	var high: Array = await _jump(p.MAX_FLAPS, [KEY_W])
 	await _place(spot)
-	var high: Array = await _jump(p.MAX_FLAPS, [KEY_W], true)
-	await _place(spot)
-	var drift: Array = await _jump(0, [], true)  # no keys: drifts forward on its own
-	print("distance: plain jump %.1f m, glide %.1f m, glide after %d flaps %.1f m, glide without keys %.1f m" % [
-		plain[1], glide[1], p.MAX_FLAPS, high[1], drift[1]])
-	assert(glide[1] > plain[1] * 1.2, "glide not further")
+	var drift: Array = await _jump(0, [])  # no keys: drifts forward on its own
+	print("distance: ballistic jump %.1f m, glide %.1f m, glide after %d flaps %.1f m, glide without keys %.1f m" % [
+		plain, glide[1], p.MAX_FLAPS, high[1], drift[1]])
+	assert(glide[1] > plain * 1.2, "glide not further")
 	assert(high[1] > glide[1] * 1.5)
 	assert(drift[1] > 2.0)
 
-	# Letting go of a glide in mid-air (no keys) keeps its speed: no dead stop.
+	# A wing beat in mid-glide (no keys) interrupts it but keeps its speed, and the glide comes back.
 	p.global_position = spot + Vector3(0, 30, 0)
 	p.velocity = Vector3.ZERO
-	_mouse(true)
 	await _frames(90)
+	assert(p.move_state == &"glide", "state %s" % p.move_state)
 	var gliding_speed := Vector2(p.velocity.x, p.velocity.z).length()
-	_mouse(false)
+	await _tap_space()
 	await _frames(10)
+	assert(p.move_state == &"flap", "state %s" % p.move_state)
 	var after := Vector2(p.velocity.x, p.velocity.z).length()
-	print("glide speed %.1f m/s, 10 frames after letting go %.1f m/s" % [gliding_speed, after])
-	assert(gliding_speed > p.SPEED and after > gliding_speed * 0.9, "momentum lost on release")
+	print("glide speed %.1f m/s, 10 frames into a wing beat %.1f m/s" % [gliding_speed, after])
+	assert(gliding_speed > p.SPEED and after > gliding_speed * 0.9, "momentum lost on a wing beat")
+	await _frames(60)
+	assert(p.move_state == &"glide", "glide didn't resume, state %s" % p.move_state)
 	for i in 600:
 		if p.is_on_floor():
 			break
@@ -197,7 +193,6 @@ func _run() -> void:
 	# negative tilt.rotation.z), more in a hard turn, capped, and levels out once the turn stops.
 	p.global_position = spot + Vector3(0, 30, 0)
 	p.velocity = Vector3.ZERO
-	_mouse(true)
 	await _frames(90)
 	var straight: float = p.tilt.rotation.z
 	var banks := {}
@@ -227,7 +222,6 @@ func _run() -> void:
 	_key(KEY_D, false)
 	_key(KEY_W, false)
 	p.set_view(p.View.FIRST)
-	_mouse(false)
 	print("iso bank turning right %.3f rad" % iso_bank)
 	assert(iso_bank < -0.2, "no right bank in iso")
 	for i in 600:
@@ -242,7 +236,6 @@ func _run() -> void:
 	p.global_position = spot + Vector3(0, 120, 0)
 	p.velocity = Vector3.ZERO
 	p.rotation = Vector3.ZERO
-	_mouse(true)
 	await _frames(60)
 	assert(p.move_state == &"glide", "state %s" % p.move_state)
 	var level_speed: float = p.glide_speed
@@ -260,7 +253,6 @@ func _run() -> void:
 	assert(p.tilt.rotation.x > 0.2)
 	await _frames(240)
 	assert(p.glide_speed < fast and p.velocity.y < 0.0, "a long climb should slow down and stall")
-	_mouse(false)
 	for i in 900:
 		if p.is_on_floor():
 			break
@@ -268,17 +260,15 @@ func _run() -> void:
 	await _frames(90)
 	assert(absf(p.pitch) < 0.05 and absf(p.tilt.rotation.x) < 0.05, "pitch not levelled after landing")
 
-	# The click that takes the mouse back after the pause menu (Escape twice: open, close) doesn't glide
-	# (headless never reports the mouse captured, like a browser refusing the capture).
+	# After the pause menu (Escape twice: open, close) the mouse stays free (headless never reports it
+	# captured, like a browser refusing the capture) until a click takes it back.
 	for i in 2:
 		_key(KEY_ESCAPE, true)
 		_key(KEY_ESCAPE, false)
 	assert(not paused and not w.menu.screen.visible)
+	assert(p.mouse_free)
 	_mouse(true)
 	_mouse(false)
-	assert(not p.glide_ok)
-	_mouse(true)
-	_mouse(false)
-	assert(p.glide_ok)
+	assert(not p.mouse_free)
 	print("MOVES OK")
 	quit()
