@@ -260,9 +260,12 @@ func _run() -> void:
 	await _frames(90)
 	assert(absf(p.pitch) < 0.05 and absf(p.tilt.rotation.x) < 0.05, "pitch not levelled after landing")
 
-	# Escape frees the mouse, a click takes it back.
-	_key(KEY_ESCAPE, true)
-	_key(KEY_ESCAPE, false)
+	# After the pause menu (Escape twice: open, close) the mouse stays free (headless never reports it
+	# captured, like a browser refusing the capture) until a click takes it back.
+	for i in 2:
+		_key(KEY_ESCAPE, true)
+		_key(KEY_ESCAPE, false)
+	assert(not paused and not w.menu.screen.visible)
 	assert(p.mouse_free)
 	_mouse(true)
 	_mouse(false)

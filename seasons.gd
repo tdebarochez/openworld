@@ -195,8 +195,9 @@ func setup() -> void:
 
 
 func _unhandled_input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and not e.echo and e.physical_keycode >= KEY_1 and e.physical_keycode <= KEY_4:
-		set_season((e.physical_keycode - KEY_1) as Season)
+	for s in Season.size():
+		if e.is_action_pressed(StringName("season_%d" % (s + 1))):
+			set_season(s as Season)
 
 
 func set_season(s: Season) -> void:
