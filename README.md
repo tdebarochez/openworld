@@ -97,8 +97,10 @@ Chaque test est un script autonome qui affiche une ligne `… OK` en cas de succ
 3. Ou les lancer tous :
 
    ```bash
-   for t in tests/test_*.gd; do godot --headless --path . -s "$t"; done
+   tools/run_tests.sh
    ```
+
+   Le script signale chaque test en échec (un `assert` raté bloque Godot au lieu de le quitter, d'où un délai maximal par test). La CI GitHub Actions (`.github/workflows/tests.yml`) le lance à chaque push et pull request.
 
 ## Générer les assets
 

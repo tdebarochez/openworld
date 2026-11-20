@@ -1,0 +1,46 @@
+# On every push and pull request: import the assets with Godot and run the headless tests.
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.7.2
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # The editor binary only: the tests need no export templates.
+      - uses: actions/cache@v4
+        id: godot
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}-editor
+
+      - name: Install Godot
+        if: steps.godot.outputs.cache-hit != 'true'
+        run: |
+          base=https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable
+          mkdir -p ~/godot
+          curl -fsSL -o /tmp/godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          mv /tmp/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64 ~/godot/godot
+
+      - name: Import assets
+        run: ~/godot/godot --headless --path . --import
+
+      - name: Run the tests
+        run: GODOT=~/godot/godot tools/run_tests.sh
