@@ -32,7 +32,7 @@ const AIR_GRACE := 0.15  # s off the floor before move_state says fall/glide (sl
 const BANK_MAX := 0.61  # rad (35°): GLIDE_STEER at full sideways pull would give 46°
 const BANK_EASE := 5.0  # 1/s exponential easing in and out of the bank (63 % in 0.2 s)
 const HEN_MIDDLE := 0.84  # m above the feet: the body's centre (tools/make_hen.py), the bank's pivot
-# Pitch, with the mouse's up/down while gliding (mouse up = nose up): a dive trades height for speed,
+# Pitch, with the mouse's up/down while gliding (inverted, like a flight stick: mouse down = nose up): a dive trades height for speed,
 # pulling up trades it back for height, and too slow the wings stall and the hen sinks. The glide's
 # speed: d(speed)/dt = -g·sin(pitch) + (GLIDE_SPEED - speed)·(GLIDE_PULL or GLIDE_DRAG); its climb rate
 # = speed·sin(pitch) + GLIDE_FALL, the lift fading out towards GLIDE_MIN (then it sinks at STALL_FALL).
@@ -140,8 +140,8 @@ func _unhandled_input(e: InputEvent) -> void:
 		else:
 			arm.spring_length = clampf(arm.spring_length * k, 2.0, 15.0)
 	elif e is InputEventMouseMotion and move_state == &"glide" and not mouse_free:
-		# Gliding: the mouse's up/down pitches the hen (mouse up = nose up) instead of tilting the view.
-		pitch = clampf(pitch - e.relative.y * PITCH_SENS, -PITCH_DOWN, PITCH_UP)
+		# Gliding: the mouse's up/down pitches the hen, inverted like a flight stick (mouse down = nose up) instead of tilting the view.
+		pitch = clampf(pitch + e.relative.y * PITCH_SENS, -PITCH_DOWN, PITCH_UP)
 		if view != View.ISO:
 			rotate_y(-e.relative.x * MOUSE_SENS)
 	elif e is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and view != View.ISO:

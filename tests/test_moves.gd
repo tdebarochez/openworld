@@ -247,14 +247,14 @@ func _run() -> void:
 	assert(p.move_state == &"glide", "state %s" % p.move_state)
 	var level_speed: float = p.glide_speed
 	var level_sink: float = p.velocity.y
-	_motion(150)  # mouse down: nose down
-	assert(p.pitch < -0.5, "mouse down should dive, pitch %f" % p.pitch)
+	_motion(-150)  # mouse up: nose down (inverted)
+	assert(p.pitch < -0.5, "mouse up should dive, pitch %f" % p.pitch)
 	await _frames(60)
 	print("level %.1f m/s sinking %.1f; dive %.1f m/s sinking %.1f" % [level_speed, level_sink, p.glide_speed, p.velocity.y])
 	assert(p.glide_speed > level_speed + 4.0 and p.velocity.y < level_sink - 4.0, "a dive should be faster and steeper")
 	assert(p.tilt.rotation.x < -0.3, "the hen's nose should point down")
 	var fast: float = p.glide_speed
-	_motion(-300)  # mouse up: nose up
+	_motion(300)  # mouse down: nose up (inverted)
 	await _frames(75)  # the pull-out takes about a second
 	assert(p.velocity.y > 0.0, "pulling up out of a dive should climb, got %f" % p.velocity.y)
 	assert(p.tilt.rotation.x > 0.2)
