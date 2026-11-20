@@ -29,10 +29,12 @@ Le monde se génère au fil des déplacements : prairies, forêts, lacs et monta
 
 ## Commandes
 
+Touches par défaut. Elles se changent dans le menu pause (Échap), qui les garde pour les parties suivantes.
+
 | Touche | Action |
 |---|---|
 | ZQSD / WASD | Se déplacer (touches physiques, donc ZQSD sur un clavier AZERTY) |
-| Shift | Courir |
+| Maj | Courir |
 | Espace | Sauter. En l'air : battre des ailes, jusqu'à 3 fois. Dans l'eau : remonter |
 | Clic gauche maintenu en l'air | Planer. Souris vers le haut : cabrer (on remonte en perdant de la vitesse, jusqu'au décrochage) ; vers le bas : piquer (on accélère en perdant de l'altitude) |
 | Souris | Regarder autour de soi |
@@ -40,11 +42,11 @@ Le monde se génère au fil des déplacements : prairies, forêts, lacs et monta
 | M | Carte |
 | 1 à 4 | Saison |
 | + / - | Avancer ou reculer l'heure |
-| O / Shift+O | Plus ou moins d'objets |
-| P / Shift+P | Portée de vue plus ou moins grande |
-| N / Shift+N | Météo |
+| O / Maj+O | Plus ou moins d'objets |
+| P / Maj+P | Portée de vue plus ou moins grande |
+| N / Maj+N | Météo |
 | L | Licences |
-| Échap | Libérer la souris |
+| Échap | Menu pause : reprendre, configuration des touches, licences, afficher ou masquer l'overlay d'infos (zones, saison, heure, objets, portée, météo). Le jeu est en pause tant qu'il est ouvert |
 
 ## Lancer le jeu
 
@@ -144,6 +146,7 @@ Les modèles 3D sont produits par des scripts Blender déterministes : les relan
 | `birds.gd` | Oiseaux |
 | `audio.gd` | Musique et sons du joueur |
 | `map.gd` | Carte |
+| `menu.gd` | Menu pause, configuration des touches, réglages sauvegardés |
 | `credits.gd` | Écran des licences |
 | `tools/` | Scripts de génération des modèles et des sons |
 | `tests/` | Tests |
@@ -153,4 +156,4 @@ Les modèles 3D sont produits par des scripts Blender déterministes : les relan
 
 Le code, les scripts de génération et les assets générés de ce dépôt sont sous licence MIT : voir [LICENSE](LICENSE).
 
-Le moteur Godot est aussi distribué sous licence MIT. Le jeu affiche sa notice de licence, et celles des composants qu'il embarque, avec la touche L.
+Le moteur Godot est aussi distribué sous licence MIT. Le jeu affiche sa notice de licence, et celles des composants qu'il embarque, avec la touche L ou depuis le menu pause.

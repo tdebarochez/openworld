@@ -31,7 +31,7 @@ func _init() -> void:
 
 
 func _unhandled_input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and not e.echo and e.keycode == KEY_M:
+	if e.is_action_pressed(&"map"):
 		visible = not visible
 		if visible:
 			refresh()

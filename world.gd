@@ -292,7 +292,8 @@ var _landmarks := {}
 var _stretched := {}  # Vector2i(Landmark, scale %) -> trimesh (main thread only)
 var _memo_lock := Mutex.new()
 var player: CharacterBody3D
-var hud := Label.new()
+var hud := Label.new()  # top left: zones, season, hour, settings, weather; shown from the pause menu
+var menu := preload("res://menu.gd").new()
 var place := Label.new()  # top centre: the village or landmark the player is at (_update_place)
 var _place_at := Vector3.INF  # where _update_place last looked
 var fps := Label.new()  # bottom right: frames per second (engine's 1 s average) and visible polygons
@@ -442,8 +443,9 @@ func _ready() -> void:
 	fps.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	layer.add_child(fps)
-	layer.add_child(preload("res://credits.gd").new())  # L: Godot's licence notice (no splash screen)
 	add_child(layer)
+	menu.world = self
+	add_child(menu)  # Escape: pause menu (keys, licences, overlay); after the hud: loads its visibility
 	var top := CanvasLayer.new()
 	top.layer = 100
 	veil.color = ProjectSettings.get_setting("application/boot_splash/bg_color")
@@ -1917,11 +1919,11 @@ func set_view_dist(d: float) -> void:
 
 
 func _unhandled_input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and not e.echo:
+	if e is InputEventKey:
 		var dir := -1 if e.shift_pressed else 1
-		if e.physical_keycode == KEY_O:
+		if e.is_action_pressed(&"density"):
 			set_density(_step(density, DENSITY_STEP * dir, DENSITY_STEP, DENSITY_MAX))
-		elif e.physical_keycode == KEY_P:
+		elif e.is_action_pressed(&"view_distance"):
 			set_view_dist(_step(view_dist, VIEW_STEP * dir, VIEW_DIST, VIEW_MAX))
 
 
@@ -2079,7 +2081,7 @@ func _shading(cell: Vector2i, res: int, mask: PackedByteArray, objects: Array, h
 
 
 func _update_hud() -> void:
-	hud.text = "ZQSD/WASD bouger · Shift courir · Espace sauter/battre des ailes/remonter · Clic planer (souris haut/bas : cabrer/piquer) ·Souris regarder · C caméra · M carte · Échap souris\n1-4 saison · +/- heure · O/Shift+O objets · P/Shift+P portée · N/Shift+N météo · L licences\nZones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m\n%s" % [
+	hud.text = "Zones : %d · Saison : %s · Heure : %s · Objets ×%s · Portée : %d m\n%s" % [
 		zones.size(), seasons.NAMES[seasons.season], daynight.clock(), density, view_dist, weather.label if weather else ""]
 
 

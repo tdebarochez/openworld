@@ -76,7 +76,7 @@ func _ready() -> void:
 
 
 func _unhandled_input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and not e.echo and e.physical_keycode == KEY_N:
+	if e.is_action_pressed(&"weather"):
 		set_preset(posmod(preset + (-1 if e.shift_pressed else 1), PRESETS.size()))
 
 
