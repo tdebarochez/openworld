@@ -36,7 +36,7 @@ Touches par défaut. Elles se changent dans le menu pause (Échap), qui les gard
 | ZQSD / WASD | Se déplacer (touches physiques, donc ZQSD sur un clavier AZERTY) |
 | Maj | Courir |
 | Espace | Sauter. En l'air : battre des ailes, jusqu'à 3 fois. Dans l'eau : remonter |
-| Clic gauche maintenu en l'air | Planer. Souris vers le haut : cabrer (on remonte en perdant de la vitesse, jusqu'au décrochage) ; vers le bas : piquer (on accélère en perdant de l'altitude) |
+| Clic gauche maintenu en l'air | Planer. Commandes inversées comme un manche d'avion : souris vers le bas, cabrer (on remonte en perdant de la vitesse, jusqu'au décrochage) ; vers le haut, piquer (on accélère en perdant de l'altitude) |
 | Souris | Regarder autour de soi |
 | C | Changer de vue : première personne, troisième personne, isométrique |
 | M | Carte |
