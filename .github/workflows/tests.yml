@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The editor binary only: the tests need no export templates.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: godot
         with:
           path: ~/godot
