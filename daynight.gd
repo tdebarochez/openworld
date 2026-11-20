@@ -68,13 +68,10 @@ func _ready() -> void:
 	apply()
 
 
-## +1 for '+' (also the unshifted '=' key on QWERTY and the keypad), -1 for '-', else 0.
+## +1 for '+' (time_forward: by default also the unshifted '=' key on QWERTY and the keypad), -1 for
+## '-' (time_back), else 0.
 static func key_dir(e: InputEventKey) -> int:
-	if e.unicode == 43 or e.keycode in [KEY_PLUS, KEY_EQUAL, KEY_KP_ADD]:
-		return 1
-	if e.unicode == 45 or e.keycode in [KEY_MINUS, KEY_KP_SUBTRACT]:
-		return -1
-	return 0
+	return int(e.is_action(&"time_forward")) - int(e.is_action(&"time_back"))
 
 
 func _unhandled_input(e: InputEvent) -> void:
@@ -90,8 +87,8 @@ func _unhandled_input(e: InputEvent) -> void:
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
-		held.clear()  # the release would be missed
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_PAUSED:
+		held.clear()  # the release would be missed (paused: _unhandled_input doesn't run)
 
 
 func _process(delta: float) -> void:

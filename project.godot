@@ -8,6 +8,81 @@ config/features=PackedStringArray("4.7")
 boot_splash/show_image=false
 boot_splash/bg_color=Color(0.949, 0.914, 0.855, 1)
 
+[input]
+
+move_forward={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":87)]
+}
+move_back={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":83)]
+}
+move_left={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":65)]
+}
+move_right={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":68)]
+}
+jump={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":32)]
+}
+sprint={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":4194325)]
+}
+camera={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":67)]
+}
+map={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"keycode":77)]
+}
+season_1={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":49)]
+}
+season_2={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":50)]
+}
+season_3={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":51)]
+}
+season_4={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":52)]
+}
+time_forward={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"keycode":43), Object(InputEventKey,"device":-1,"keycode":61), Object(InputEventKey,"device":-1,"keycode":4194437)]
+}
+time_back={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"keycode":45), Object(InputEventKey,"device":-1,"keycode":4194435)]
+}
+density={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":79)]
+}
+view_distance={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":80)]
+}
+weather={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":78)]
+}
+licences={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"device":-1,"physical_keycode":76)]
+}
+
 [rendering]
 
 renderer/rendering_method.web="gl_compatibility"

@@ -31,6 +31,8 @@ func _ready() -> void:
 	music.stream = MUSIC[season]
 	music.volume_db = MUSIC_DB
 	music.autoplay = true  # web: Godot resumes the browser's AudioContext on the first click/key
+	music.process_mode = PROCESS_MODE_ALWAYS  # plays on in the pause menu (steps and fx pause)
+	fading.process_mode = PROCESS_MODE_ALWAYS
 	for p in [music, fading, steps, fx]:
 		add_child(p)
 

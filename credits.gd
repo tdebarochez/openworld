@@ -1,5 +1,5 @@
 extends PanelContainer
-## Credits and licences, toggled with L: the Godot Engine's MIT notice and its third-party components'
+## Credits and licences, toggled with L or from the pause menu (menu.gd): the Godot Engine's MIT notice and its third-party components'
 ## copyrights and licences, as the licence asks of a game shipped without the Godot splash screen. The
 ## texts come from the engine itself (Engine.get_license_text and friends), so they match the build.
 
@@ -16,7 +16,7 @@ func _init() -> void:
 
 
 func _ready() -> void:
-	var out := "OpenWorld — fait avec le moteur Godot (godotengine.org)\nL ou Échap : fermer\n\n"
+	var out := "OpenWorld — fait avec le moteur Godot (godotengine.org)\nÉchap : fermer\n\n"
 	out += Engine.get_license_text() + "\n\nComposants tiers du moteur\n\n"
 	for c in Engine.get_copyright_info():
 		out += c.name + "\n"
@@ -32,10 +32,14 @@ func _ready() -> void:
 
 
 func _unhandled_input(e: InputEvent) -> void:
-	if not (e is InputEventKey and e.pressed and not e.echo):
-		return
-	if e.physical_keycode == KEY_L or (visible and e.keycode == KEY_ESCAPE):
-		visible = not visible
-		# Free the mouse to scroll and select while open; take it back on closing.
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if visible else Input.MOUSE_MODE_CAPTURED
+	if e.is_action_pressed(&"licences"):
+		toggle()
 		get_viewport().set_input_as_handled()
+
+
+## Escape closes it too, through menu.gd.
+func toggle() -> void:
+	visible = not visible
+	# Free the mouse to scroll and select while open; take it back on closing, unless the pause menu
+	# it was opened from is still there.
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if visible or get_tree().paused else Input.MOUSE_MODE_CAPTURED

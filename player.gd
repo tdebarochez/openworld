@@ -1,6 +1,7 @@
 extends CharacterBody3D
 ## Walker. C cycles the view: first person → third person (camera behind, mouse orbits) →
-## isometric. Movement uses physical keys, so ZQSD on AZERTY = WASD on QWERTY.
+## isometric. Keys are InputMap actions (project.godot, rebound in menu.gd), physical by default, so
+## ZQSD on AZERTY = WASD on QWERTY.
 
 enum View { FIRST, THIRD, ISO }
 
@@ -63,7 +64,7 @@ var flaps := MAX_FLAPS  # wing beats left in this airtime
 var flap_time := 0.0  # s left of &"flap"
 var air := 0.0  # s since the feet last touched the floor
 var space_was := false  # Space held last frame: a flap needs a fresh press, holding it doesn't flutter
-var mouse_free := false  # released with Escape
+var mouse_free := false  # released by the pause menu (menu.gd)
 var glide_ok := true  # false for the click that takes the mouse back: it captures, it doesn't glide
 var pitch := 0.0  # rad, nose up > 0: the glide's pitch, set with the mouse while gliding
 var glide_speed := GLIDE_SPEED  # m/s the glide flies at (dives speed it up, climbs slow it down)
@@ -131,7 +132,7 @@ func _follow() -> void:
 
 
 func _unhandled_input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and not e.echo and e.physical_keycode == KEY_C:
+	if e.is_action_pressed(&"camera"):
 		set_view(((view + 1) % View.size()) as View)
 	elif view != View.FIRST and e is InputEventMouseButton and e.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
 		var k := 0.9 if e.button_index == MOUSE_BUTTON_WHEEL_UP else 1.1  # wheel zooms
@@ -150,9 +151,6 @@ func _unhandled_input(e: InputEvent) -> void:
 			camera.rotation.x = clampf(camera.rotation.x - e.relative.y * MOUSE_SENS, -1.5, 1.5)
 		else:  # third person: tilt the arm, from just above the ground to well overhead
 			arm.rotation.x = clampf(arm.rotation.x - e.relative.y * MOUSE_SENS, -1.3, 0.4)
-	elif e is InputEventKey and e.pressed and e.keycode == KEY_ESCAPE:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		mouse_free = true
 	elif e is InputEventMouseButton and e.pressed:
 		# Own bookkeeping rather than Input.mouse_mode, which headless (tests) never reports as captured.
 		if e.button_index == MOUSE_BUTTON_LEFT:
@@ -164,7 +162,7 @@ func _unhandled_input(e: InputEvent) -> void:
 func _physics_process(delta: float) -> void:
 	# Body centre below the surface = swimming (feet ~1 m under water).
 	var swimming: bool = global_position.y < world.WATER_LEVEL
-	var space := Input.is_physical_key_pressed(KEY_SPACE)
+	var space := Input.is_action_pressed(&"jump")
 	var tap := space and not space_was
 	space_was = space
 	flap_time -= delta
@@ -203,10 +201,8 @@ func _physics_process(delta: float) -> void:
 			velocity.y = JUMP
 			flap_time = FLAP_ANIM
 			sfx.jump()
-	var input := Vector2(
-		float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
-		float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
-	var speed := (SWIM_SPEED if swimming else SPEED) * (SPRINT_MULT if Input.is_physical_key_pressed(KEY_SHIFT) else 1.0)
+	var input := Input.get_vector(&"move_left", &"move_right", &"move_forward", &"move_back")
+	var speed := (SWIM_SPEED if swimming else SPEED) * (SPRINT_MULT if Input.is_action_pressed(&"sprint") else 1.0)
 	# Iso: keys follow the screen (up = away from the camera) and the player turns to face its way.
 	var iso := view == View.ISO
 	var dir := ((Basis(Vector3.UP, ISO_YAW) if iso else basis) * Vector3(input.x, 0, input.y)).normalized()

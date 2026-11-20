@@ -268,9 +268,12 @@ func _run() -> void:
 	await _frames(90)
 	assert(absf(p.pitch) < 0.05 and absf(p.tilt.rotation.x) < 0.05, "pitch not levelled after landing")
 
-	# The click that takes the mouse back after Escape doesn't glide.
-	_key(KEY_ESCAPE, true)
-	_key(KEY_ESCAPE, false)
+	# The click that takes the mouse back after the pause menu (Escape twice: open, close) doesn't glide
+	# (headless never reports the mouse captured, like a browser refusing the capture).
+	for i in 2:
+		_key(KEY_ESCAPE, true)
+		_key(KEY_ESCAPE, false)
+	assert(not paused and not w.menu.screen.visible)
 	_mouse(true)
 	_mouse(false)
 	assert(not p.glide_ok)
